@@ -5,8 +5,8 @@ const jointNames=['Knee','Shoulder','Hip'];
 const limits=[[-90,90],[-10,90],[-60,60]];
 let pending=0;
 
-async function rpc(method,params={}){
-  const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),15000);
+async function rpc(method,params={},options={}){
+  const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),options.timeout||15000);
   try{
     const response=await fetch('/mcp',{method:'POST',headers:{'Content-Type':'application/json','Accept':'application/json, text/event-stream','MCP-Protocol-Version':'2025-03-26'},body:JSON.stringify({jsonrpc:'2.0',id:++rpcId,method,params}),signal:controller.signal});
     if(!response.ok)throw new Error(`Server returned ${response.status}: ${(await response.text()).slice(0,180)}`);
@@ -16,9 +16,9 @@ async function rpc(method,params={}){
     return result.result;
   }finally{clearTimeout(timeout);}
 }
-async function call(name,args={}){
+async function call(name,args={},options={}){
   if(!initialized){await rpc('initialize',{protocolVersion:'2025-03-26',capabilities:{},clientInfo:{name:'PiBotPal Web',version:'0.1.0'}});initialized=true;}
-  const result=await rpc('tools/call',{name,arguments:args});
+  const result=await rpc('tools/call',{name,arguments:args},options);
   const raw=result?.content?.filter(c=>c.type==='text').map(c=>c.text).join('\n')||'';
   if(result?.isError)throw new Error(raw||'The robot could not complete this command.');
   if(result?.structuredContent){const data=result.structuredContent;return Object.keys(data).length===1&&'result' in data?data.result:data;}
@@ -30,7 +30,16 @@ async function command(name,args={},message){pending++;updateControls();try{cons
 function motionAllowed(){return connected&&status.armed&&!status.busy&&!status.estop&&!pending;}
 function updateControls(){document.querySelectorAll('[data-move],.motion-control,.joint-slider').forEach(button=>button.disabled=!motionAllowed());$('arm').disabled=!connected||pending>0;$('arm').textContent=status.armed?'Disarm motion':'Arm motion';$('arm').classList.toggle('armed',Boolean(status.armed));$('arm-label').textContent=status.estop?'Stop latched · arm to reset':status.armed?'Motion armed':'Motion disarmed';$('motion-tag').textContent=status.estop?'STOPPED':status.busy?'MOVING':status.armed?'ARMED':'DISARMED';$('motion-tag').className=`tag ${status.estop?'red':status.armed?'teal':''}`;}
 function render(state){
-  status=state;const angles=state.servo_angles||[];$('battery').textContent=Number.isFinite(state.battery_voltage)?`Battery ${state.battery_voltage.toFixed(2)} V`:'Battery unavailable';
+  status=state;const angles=state.servo_angles||[];
+  const power=state.power||{powered:true,voltage:state.battery_voltage,valid:Number.isFinite(state.battery_voltage)},powerValid=power.valid!==false&&Number.isFinite(power.voltage);
+  $('battery').textContent=powerValid?`Battery ${power.voltage.toFixed(2)} V`:'Battery unavailable';
+  $('power-voltage').textContent=powerValid?power.voltage.toFixed(2):'—';
+  $('power-detail').textContent=powerValid?`Measured supply · ${power.source||'Robot HAT ADC'}`:power.error||'Supply voltage unavailable';
+  $('power-state').textContent=power.powered===true?'POWERED':'POWER STATE UNKNOWN';$('power-state').className=`tag ${power.powered===true?'teal':''}`;
+  $('power-charging').textContent=power.charging===true?'Charging':power.charging===false?'Not charging':'Unknown';
+  $('power-external').textContent=power.external_power===true?'Connected':power.external_power===false?'Disconnected':'Unknown';
+  $('power-runtime').textContent=Number.isFinite(power.estimated_runtime_minutes)?`About ${Math.round(power.estimated_runtime_minutes)} min`:'Not calibrated';
+  $('power-sleep').textContent=Number.isFinite(power.sleep_after_minutes)?`In ${Math.round(power.sleep_after_minutes)} min`:'Not configured';
   $('activity').textContent=state.busy?(state.action||'Moving'):state.estop?'Stopped':state.armed?'Ready':'Disarmed';
   $('hardware-mode').textContent=state.simulate||state.simulated||state.mode==='simulation'?'Simulation · no hardware writes':state.action_error||state.error||state.hardware_error||state.errors?.at(-1)||'Robot HAT · live hardware';
   const distance=state.ultrasonic?.valid?state.ultrasonic.distance_cm:null,hasRange=Number.isFinite(distance);
@@ -59,7 +68,7 @@ function render(state){
   if(run.finished_at&&run.finished_at!==render.lastFinished){render.lastFinished=run.finished_at;log(run.error?`Test failed: ${run.error}`:{test:run.example_id,result:run.result});}
   renderRecordings(state.recordings||[]);model?.update(state);updateControls();$('last-updated').textContent=`Telemetry ${new Date().toLocaleTimeString()}`;
 }
-async function refresh(){if(polling)return;polling=true;try{const state=await call('get_status');connected=true;$('connection-dot').className='connected';$('connection-text').textContent='Connected';render(state);}catch(error){connected=false;initialized=false;$('connection-dot').className='error';$('connection-text').textContent='Disconnected';$('activity').textContent='Disconnected';$('last-updated').textContent='Telemetry unavailable';$('battery').textContent='Battery unavailable';
+async function refresh(){if(polling)return;polling=true;try{const state=await call('get_status');connected=true;$('connection-dot').className='connected';$('connection-text').textContent='Connected';render(state);}catch(error){connected=false;initialized=false;$('connection-dot').className='error';$('connection-text').textContent='Disconnected';$('activity').textContent='Disconnected';$('last-updated').textContent='Telemetry unavailable';$('battery').textContent='Battery unavailable';$('power-voltage').textContent='—';$('power-detail').textContent='Disconnected · reading unavailable';$('power-state').textContent='CONNECTION LOST';$('power-state').className='tag orange';$('power-charging').textContent='Unknown';$('power-external').textContent='Unknown';$('power-runtime').textContent='Unavailable';$('power-sleep').textContent='Unavailable';
     $('distance').textContent='—';$('range-detail').textContent='Disconnected · return unavailable';$('overlay-distance').textContent='NO LIVE RANGE RETURN';$('range-return').style.opacity='0';
     model?.update({...status,ultrasonic:{...status.ultrasonic,valid:false},camera:{enabled:false},microphone:{enabled:false},speaker:{busy:false}});
     $('camera-feed').removeAttribute('src');$('camera-feed').hidden=true;cameraSource=false;$('camera-empty').hidden=false;$('camera-empty').querySelector('strong').textContent='Camera disconnected';$('camera-empty').querySelector('p').textContent='Waiting for the robot connection to return.';$('camera-status').textContent='DISCONNECTED';$('camera-dot').classList.remove('active');
@@ -72,7 +81,20 @@ function makeOption(name,schema){const label=document.createElement('label');lab
 async function loadExamples(){try{const result=await call('list_examples');examples=Array.isArray(result)?result:result.examples||[];$('example-count').textContent=examples.length;$('test-summary').textContent=`${examples.length} EXAMPLES`;$('examples').replaceChildren();for(const example of examples){const card=document.createElement('article');card.className='panel example';const top=document.createElement('div');top.className='example-top';const number=document.createElement('span');number.className='example-number';number.textContent=String(example.id).match(/^\d+/)?.[0].padStart(2,'0')||'＋';const badge=document.createElement('span');badge.className='tag';badge.textContent=example.requires?.includes('motion')?'MOTION':example.requires?.includes('motion_optional')?'OPTIONAL MOTION':(example.requires||[]).join(' · ')||'UTILITY';top.append(number,badge);const title=document.createElement('h3');title.textContent=example.title;const description=document.createElement('p');description.textContent=example.description;const source=document.createElement('div');source.className='example-source';source.textContent=example.source||`${example.id}.py`;card.append(top,title,description,source);const options=document.createElement('div');options.className='example-options';for(const [name,schema] of Object.entries(example.parameters?.properties||{}))options.append(makeOption(name,schema));card.append(options);const available=example.available!==false;if(!available){const reason=document.createElement('p');reason.className='disabled-reason';reason.textContent=example.reason||'This example needs additional configuration.';card.append(reason);}const run=document.createElement('button');run.textContent=available?'Run experiment ↗':'Unavailable';run.disabled=!available;run.addEventListener('click',async()=>{try{const args={};for(const input of options.querySelectorAll('[data-parameter]')){const type=input.dataset.type;if(type==='boolean')args[input.dataset.parameter]=input.checked;else if(input.value!=='')args[input.dataset.parameter]=type==='number'||type==='integer'?Number(input.value):type==='object'||type==='array'?JSON.parse(input.value):input.value;}if((example.requires?.includes('motion')||(example.requires?.includes('motion_optional')&&['pose','play'].includes(args.operation)))&&!status.armed){notice('Arm motion before running this experiment.','warning');return;}run.disabled=true;const result=await command('run_example',{example_id:example.id,options:args},`Started ${example.title}.`);log({test:example.id,result});}catch(error){log(error.message);}finally{run.disabled=!available;}});card.append(run);$('examples').append(card);}}catch(error){$('test-summary').textContent='CATALOG UNAVAILABLE';log(error.message);}}
 
 initJoints();
-document.querySelectorAll('[data-tab]').forEach(tab=>tab.addEventListener('click',()=>{document.querySelectorAll('[data-tab]').forEach(t=>{t.classList.toggle('active',t===tab);t.toggleAttribute('aria-current',t===tab);});document.querySelectorAll('.tab-panel').forEach(panel=>panel.hidden=panel.id!==tab.dataset.tab);const dashboard=tab.dataset.tab==='dashboard';$('page-title').textContent=dashboard?'A little closer to the ground.':'Meet your crawler’s capabilities.';$('page-description').textContent=dashboard?'See what your crawler sees. Keep every leg in view.':'Explore the examples through the same MCP control layer.';if(!dashboard&&!examples.length)loadExamples();}));
+let admin = null;
+function selectTab(name, updateHash = true) {
+  if (!['dashboard','testing','admin'].includes(name)) name = 'dashboard';
+  document.querySelectorAll('[data-tab]').forEach(tab=>{const active=tab.dataset.tab===name;tab.classList.toggle('active',active);if(active)tab.setAttribute('aria-current','page');else tab.removeAttribute('aria-current');});
+  document.querySelectorAll('.tab-panel').forEach(panel=>panel.hidden=panel.id!==name);
+  const titles={dashboard:['A little closer to the ground.','See what your crawler sees. Keep every leg in view.'],testing:['Meet your crawler’s capabilities.','Explore the examples through the same MCP control layer.'],admin:['Make the connections.','Choose models, manage MCP servers, and set the defaults.']};
+  $('page-title').textContent=titles[name][0];$('page-description').textContent=titles[name][1];
+  if(name==='testing')loadExamples();
+  if(name==='admin')admin?.refresh();
+  if(updateHash)history.replaceState(null,'',name==='dashboard'?location.pathname:'#'+name);
+}
+document.querySelectorAll('[data-tab]').forEach(tab=>tab.addEventListener('click',()=>selectTab(tab.dataset.tab)));
+window.addEventListener('hashchange',()=>selectTab(location.hash.slice(1),false));
+
 $('arm').addEventListener('click',()=>command('arm',{armed:!status.armed},status.armed?'Motion disarmed.':'Motion armed. Place the crawler on a clear, stable surface.').catch(()=>{}));
 const stop=()=>command('stop',{},'Stop requested. Motion is disarmed.').catch(()=>{});$('stop').addEventListener('click',stop);$('drive-stop').addEventListener('click',stop);
 document.querySelectorAll('[data-move]').forEach(button=>button.addEventListener('click',()=>command('move',{name:button.dataset.move,speed:Number($('speed').value),steps:1}).catch(()=>{})));
@@ -90,4 +112,6 @@ window.addEventListener('offline',()=>{connected=false;updateControls();});
 function stopOnLeave(){ $('microphone-player').pause();if(!initialized||!(status.armed||status.microphone?.enabled||status.examples?.running))return;fetch('/mcp',{method:'POST',keepalive:true,headers:{'Content-Type':'application/json','Accept':'application/json, text/event-stream','MCP-Protocol-Version':'2025-03-26'},body:JSON.stringify({jsonrpc:'2.0',id:++rpcId,method:'tools/call',params:{name:'stop',arguments:{}}})}).catch(()=>{});notice('Motion stopped and audio muted when this page left the foreground.');}
 window.addEventListener('pagehide',stopOnLeave);document.addEventListener('visibilitychange',()=>{if(document.hidden)stopOnLeave();else refresh();});
 try{const {RobotView}=await import('./robot-view.js');model=new RobotView($('robot-view'));}catch(error){$('model-error').textContent=`3D rendering unavailable: ${error.message}`;$('model-error').hidden=false;}
+try{const {initAdmin}=await import('./admin.js');admin=initAdmin({call,notice,onConfigChanged:loadExamples});}catch(error){$('admin').textContent=`Admin unavailable: ${error.message}`;}
+selectTab(location.hash.slice(1),false);
 await refresh();loadExamples();setInterval(refresh,500);setInterval(()=>{$('clock').textContent=new Date().toLocaleTimeString('en-GB');},1000);

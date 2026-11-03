@@ -80,6 +80,7 @@ class Controller:
         self._errors = []
         self._range = {'distance_cm': None, 'valid': False, 'timestamp': None}
         self._battery = None
+        self._battery_timestamp = None
         self._started = time.monotonic()
         self._read_offsets()
 
@@ -182,6 +183,9 @@ class Controller:
                 'servo_raw_angles': [None if a is None else DIRECTIONS[i] * (a + self._offsets[i]) for i, a in enumerate(angles)],
                 'legs': [leg_geometry(i, angles[i*3:i*3+3]) for i in range(4)],
                 'ultrasonic': sensor, 'battery_voltage': self._battery,
+                'power': {'powered': True, 'estimated_runtime_minutes': None, 'sleep_after_minutes': None, 'voltage': self._battery, 'timestamp': self._battery_timestamp,
+                          'valid': self._battery is not None and self._battery_timestamp is not None and time.time()-self._battery_timestamp < 15,
+                          'source': 'Robot HAT ADC', 'charging': None, 'external_power': None},
                 'orientation': {'available': False, 'source': 'unavailable; no IMU', 'roll': None, 'pitch': None, 'yaw': None},
                 'pose_source': 'commanded' if all(a is not None for a in angles) else 'unknown',
                 'errors': list(self._errors), 'uptime_s': round(time.monotonic()-self._started, 1),
@@ -411,6 +415,7 @@ class Controller:
                         value = battery()
                     with self._lock:
                         self._battery = round(value, 2) if math.isfinite(value) and value > 0 else None
+                        self._battery_timestamp = time.time()
                 except Exception as exc:
                     self._error(f'Battery read failed: {exc}')
             cycle += 1

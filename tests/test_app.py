@@ -101,3 +101,48 @@ def test_microphone_lease_expires_while_disarmed(client, monkeypatch):
     clock[0]+=16
     time.sleep(1.2)
     assert not client.app.state.media.status()['microphone']['enabled']
+
+
+def test_admin_credentials_redacted_defaults_enable_test(client):
+    saved=call(client,'admin_save_provider',provider={'name':'Test provider','kind':'ollama','base_url':'http://127.0.0.1:11434','model':'qwen-test','api_key':'secret-test-key'})
+    assert 'secret-test-key' not in json.dumps(saved)
+    provider_id=saved['structuredContent']['id']
+    assert saved['structuredContent']['api_key_set']
+    assert 'secret-test-key' not in json.dumps(call(client,'admin_get'))
+    defaults=call(client,'admin_save_defaults',defaults={'test_provider_id':provider_id})
+    assert not defaults['isError']
+    catalog=call(client,'list_examples')['structuredContent']
+    if isinstance(catalog,dict): catalog=catalog['result']
+    assert next(e for e in catalog if e['id']=='17_online_llm_test')['available']
+    assert call(client,'admin_save_provider',provider={'id':provider_id,'base_url':'http://new-server:11434'})['isError']
+    call(client,'admin_delete_provider',provider_id=provider_id)
+    assert call(client,'admin_get')['structuredContent']['defaults']['test_provider_id'] is None
+
+
+def test_admin_model_job_runs_through_builtin_mcp_tools(client,monkeypatch):
+    provider=call(client,'admin_save_provider',provider={'name':'Fake model','kind':'ollama','base_url':'http://127.0.0.1:11434','model':'qwen-test'})['structuredContent']
+    call(client,'admin_save_defaults',defaults={'test_provider_id':provider['id']})
+    calls=[]
+    async def complete(provider,messages,tools=None,options=None):
+        calls.append(messages.copy())
+        if len(calls)==1:
+            assert {t['function']['name'] for t in tools}=={'robot_get_status','robot_list_examples'}
+            return {'model':'qwen-test','message':{'role':'assistant','content':'','tool_calls':[{'id':'t1','type':'function','function':{'name':'robot_get_status','arguments':'{}'}}]}}
+        return {'model':'qwen-test','message':{'role':'assistant','content':'Robot is disarmed.'},'usage':{}}
+    monkeypatch.setattr('pibotpal.assistant.integrations.complete',complete)
+    job=call(client,'llm_start',prompt='Check status.',use_tools=True)['structuredContent']
+    for _ in range(50):
+        job=call(client,'llm_job',job_id=job['id'])['structuredContent']
+        if job['status']!='running': break
+        time.sleep(.02)
+    assert job['status']=='complete',job
+    assert job['trace'][0]['result'].get('armed') is False, job['trace']
+    assert not client.app.state.controller.status()['armed']
+    assert all(a is None for a in client.app.state.controller.status()['servo_angles'])
+
+
+def test_power_telemetry_distinguishes_unknown_values(client):
+    power=call(client,'get_status')['structuredContent']['power']
+    assert power['powered']
+    assert power['charging'] is None and power['estimated_runtime_minutes'] is None
+    assert power['voltage'] is None and not power['valid']

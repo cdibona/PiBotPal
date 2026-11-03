@@ -40,16 +40,36 @@ Ultrasonic telemetry is a single forward range measurement, drawn as a return/ra
 
 ## Testing and example coverage
 
-The Testing tab lists each local vendor example, its parameters, and dependency limitations. Tests are bounded and cancellable. The STT/LLM/voice adapters have not yet been ported into this service. Their six catalog entries are explicitly unavailable; implementing bounded adapters and choosing models/provider configuration remain follow-up work. Setting credentials alone will not enable them. They never silently activate the microphone or upload audio. Calibration changes require deliberate test controls; vendor scripts are not executed directly.
+The Testing tab lists each local vendor example, its parameters, and dependency limitations. Tests are bounded and cancellable. The language-model test uses the default testing provider configured in Admin. STT and voice-to-action adapters remain unavailable; adding an LLM provider does not implement speech recognition or enable microphone capture. They never silently activate the microphone or upload audio. Calibration changes require deliberate test controls; vendor scripts are not executed directly.
 
 ```sh
 .venv/bin/pip install -r requirements-dev.txt
 PIBOTPAL_SIMULATE=1 .venv/bin/python -m pytest -q
 ```
 
-Android is a future client of this same MCP contract; no Android binary is included in this first web implementation.
+Native Android and Windows MVP clients now use this same MCP contract and decode the MJPEG video stream. See [client setup and builds](clients/README.md) and the [Native clients build artifacts](https://github.com/cdibona/PiBotPal/actions/workflows/clients.yml). Their first versions cover motion, video, and telemetry; 3D, Admin, and the testing catalog remain in the web dashboard.
 
 Protocol/hosting references: [official MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk), [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve).
+
+## Admin: model providers and MCP connections
+
+Open the [Admin tab](https://spiderbot.tail689a35.ts.net/#admin). Add an **Ollama** server with its origin (`http://your-server:11434`), or an **OpenAI-compatible** Chat Completions API base (`https://your-provider/v1`). Save, choose **Discover models**, select an exact installed model tag, then save the model. Discovery never pulls or downloads a model. Qwen is supported through Ollama; both Ollama native and its OpenAI-compatible endpoint have been tested against the provided server.
+
+Choose separate testing and assistant defaults. The playground sends only the text you enter; camera/audio data is not included. Model jobs are bounded by the configured whole-job timeout, five model rounds, and eight tool calls, and can be cancelled. The language-model example becomes available after selecting the default testing provider.
+
+Remote MCP connections support Streamable HTTP and legacy SSE with optional bearer authentication. Save a connection, inspect its tools, select an explicit allowlist, then save. Tools are used only when a prompt enables MCP tools. The model's built-in tool permissions default to status/catalog reads; movement permissions still require manual arming. Admin, arming, and microphone controls are excluded from the built-in model tool list. Remote servers are trusted only for the tools you select; selecting a remote tool authorizes that server's behavior.
+
+Settings live in `~/.local/share/pibotpal/settings.json` with mode `0600`, outside Git. Credentials are stored locally in plaintext protected by filesystem permissions, sent only to their saved endpoint, and omitted from API/UI reads. Blank credential fields preserve existing secrets; removal is explicit. Changing a credential's destination requires re-entering or clearing it. HTTP endpoints are useful for LAN/Tailscale services; use HTTPS for public providers. Redirects are rejected. OAuth-only MCP servers and local stdio commands are not supported in this version.
+
+Admin uses the same Tailscale access boundary as the hardware controls. Every tailnet user/local process allowed to access this server can administer it; there is no additional user-role system. Review tailnet ACLs when sharing the robot.
+
+The shared MCP API adds `admin_get`, `admin_save_provider`, `admin_delete_provider`, `admin_discover_models`, `admin_save_defaults`, `admin_save_connection`, `admin_delete_connection`, `admin_probe_connection`, `llm_start`, `llm_job`, and `llm_cancel`. Job histories are memory-only and reset on service restart.
+
+## Power monitoring
+
+The dashboard has a dedicated power panel. `get_status.power` reports powered state, measured voltage, sample timestamp/freshness, and source. The Robot HAT exposes battery voltage, but this installation has no charging-state, external-power, current-draw, or capacity telemetry. Charging and estimated runtime are therefore unknown; no charge percentage is invented. There is no automatic sleep/suspend/shutdown policy. The 15-second control heartbeat disarms motion and mutes audio; it does not power down the Pi or servos.
+
+API references: [Ollama chat](https://docs.ollama.com/api/chat), [Ollama model discovery](https://docs.ollama.com/api/tags), [OpenAI Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create).
 
 ## License
 

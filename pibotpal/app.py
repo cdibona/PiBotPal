@@ -4,6 +4,7 @@ import asyncio
 from contextlib import asynccontextmanager
 import fcntl
 import logging
+import json
 import os
 from pathlib import Path
 import time
@@ -17,6 +18,9 @@ from mcp.server.transport_security import TransportSecuritySettings
 from .hardware import Controller
 from .media import Media
 from .examples import ExampleRunner
+from .settings import Settings
+from .assistant import Assistant
+from . import integrations
 
 
 def create_app(controller=None, media=None):
@@ -30,6 +34,8 @@ def create_app(controller=None, media=None):
     origins = {f'http://{h}' for h in hosts if h.startswith(('localhost', '127.0.0.1'))}
     origins.add(f'https://{domain}')
     lease = {'last_seen': 0.0}
+    settings = Settings(media.root)
+    llm_example = {'id': None}
     mcp = FastMCP('PiBotPal', instructions='Controls a physical PiCrawler. Read get_status first. '
                  'Arm explicitly before movement. Call get_status every 5 seconds to maintain the 15-second '
                  'control lease. Movements are bounded. Servo positions are commanded estimates, not feedback. '
@@ -40,6 +46,40 @@ def create_app(controller=None, media=None):
     async def invoke(fn, *args, **kwargs):
         return await asyncio.to_thread(fn, *args, **kwargs)
 
+    async def call_robot_tool(name, arguments):
+        result = await mcp.call_tool(name, arguments)
+        if isinstance(result, tuple):
+            content, structured = result
+            return structured
+        if isinstance(result, dict):
+            return result
+        blocks = [block.model_dump(mode='json') for block in result]
+        texts = [block['text'] for block in blocks if block.get('type') == 'text']
+        if len(texts) == 1:
+            try:
+                return json.loads(texts[0])
+            except ValueError:
+                pass
+        return {'content': blocks}
+
+    assistant = Assistant(settings, mcp.list_tools, call_robot_tool)
+
+    def example_catalog():
+        catalog = examples.list()
+        item = next(e for e in catalog if e['id'] == '17_online_llm_test')
+        item['title'] = 'Configured language model'
+        item['description'] = 'Send one text prompt to the default testing provider selected in Admin. No camera or microphone is sent.'
+        item['requires'] = ['LLM provider']
+        item['parameters'] = {'type': 'object', 'properties': {
+            'prompt': {'type': 'string', 'default': 'Say hello and describe how you can help test a four-legged robot.', 'maxLength': 16000}}, 'additionalProperties': False}
+        try:
+            provider = settings.provider(purpose='tests')
+            item['available'] = bool(provider['enabled'] and provider['model'])
+            item['reason'] = None if item['available'] else 'Select an enabled provider and model in Admin.'
+        except ValueError:
+            item['reason'] = 'Choose a default testing provider and model in Admin.'
+        return catalog
+
     @mcp.tool()
     async def get_status() -> dict:
         """Read live hardware/media state and renew the 15-second operator heartbeat."""
@@ -47,6 +87,16 @@ def create_app(controller=None, media=None):
         state = await invoke(controller.status)
         state.update(media.status())
         state['examples'] = examples.status()
+        if llm_example['id']:
+            try:
+                job = assistant.snapshot(llm_example['id'])
+                if job['started_at'] >= (state['examples'].get('started_at') or 0):
+                    state['examples'] = {'running': job['status'] == 'running', 'permits_manual_motion': True,
+                                         'example_id': '17_online_llm_test', 'phase': job['status'],
+                                         'result': job['result'], 'error': job['error'], 'started_at': job['started_at'],
+                                         'finished_at': job['finished_at']}
+            except ValueError:
+                llm_example['id'] = None
         state['control_lease_seconds'] = 15
         return state
 
@@ -67,6 +117,7 @@ def create_app(controller=None, media=None):
         await invoke(controller.stop)
         await invoke(examples.stop)
         await invoke(media.stop)
+        await assistant.cancel_all()
         return await get_status()
 
     def ensure_manual():
@@ -105,11 +156,18 @@ def create_app(controller=None, media=None):
     @mcp.tool()
     async def list_examples() -> list[dict]:
         """List reimplemented examples, parameters, dependencies, and unavailable capabilities."""
-        return examples.list()
+        return example_catalog()
 
     @mcp.tool()
     async def run_example(example_id: str, options: dict | None = None) -> dict:
         """Start a bounded test from the example catalog. Motion requires arming; mic stays opt-in."""
+        if example_id == '17_online_llm_test':
+            options = options or {}
+            if set(options) - {'prompt'}:
+                raise ValueError('Unknown language-model test options')
+            job = assistant.start(options.get('prompt', 'Say hello briefly.'), purpose='tests', use_tools=False)
+            llm_example['id'] = job['id']
+            return job
         return await invoke(examples.run, example_id, options or {})
 
     @mcp.tool()
@@ -138,11 +196,74 @@ def create_app(controller=None, media=None):
         """Record a silent local camera clip for 1–30 seconds; returns a download URL."""
         return await invoke(media.record, seconds)
 
+    @mcp.tool()
+    async def admin_get() -> dict:
+        """Read integration settings without credentials, and server connection information."""
+        state = settings.public()
+        state['server'] = {'mcp_url': f'https://{domain}/mcp', 'transport': 'streamable_http',
+                           'auth': 'Tailscale network access; local processes and tailnet users with access are trusted administrators.'}
+        state['jobs'] = assistant.summaries()
+        return state
+
+    @mcp.tool()
+    async def admin_save_provider(provider: dict) -> dict:
+        """Create/update an LLM endpoint. Blank API key preserves the stored key; clear_api_key removes it."""
+        return await invoke(settings.save_provider, provider)
+
+    @mcp.tool()
+    async def admin_delete_provider(provider_id: str) -> dict:
+        """Delete a saved provider and clear defaults referencing it."""
+        return await invoke(settings.delete_provider, provider_id)
+
+    @mcp.tool()
+    async def admin_discover_models(provider_id: str) -> dict:
+        """Test a saved endpoint by listing available models. Does not download or pull models."""
+        return await integrations.discover_models(settings.provider(provider_id))
+
+    @mcp.tool()
+    async def admin_save_defaults(defaults: dict) -> dict:
+        """Save default providers, model limits, system prompt, and explicit robot tool permissions."""
+        return await invoke(settings.save_defaults, defaults)
+
+    @mcp.tool()
+    async def admin_save_connection(connection: dict) -> dict:
+        """Save a remote MCP endpoint and its allowed tools. Blank bearer_token preserves its secret."""
+        return await invoke(settings.save_connection, connection)
+
+    @mcp.tool()
+    async def admin_delete_connection(connection_id: str) -> dict:
+        """Remove a remote MCP server and its saved credential."""
+        return await invoke(settings.delete_connection, connection_id)
+
+    @mcp.tool()
+    async def admin_probe_connection(connection_id: str) -> dict:
+        """Initialize a remote MCP connection and inspect tools without executing any of them."""
+        return await integrations.inspect_mcp(settings.connection(connection_id))
+
+    @mcp.tool()
+    async def llm_start(prompt: str, provider_id: str | None = None, purpose: str = 'tests', use_tools: bool = False) -> dict:
+        """Start a bounded model job using saved configuration. Only explicitly allowed MCP tools may run."""
+        return assistant.start(prompt, provider_id, purpose, use_tools)
+
+    @mcp.tool()
+    async def llm_job(job_id: str) -> dict:
+        """Read model job output, status, and tool trace."""
+        return assistant.snapshot(job_id)
+
+    @mcp.tool()
+    async def llm_cancel(job_id: str) -> dict:
+        """Cancel a model job and stop any robot motion it issued."""
+        result = await assistant.cancel(job_id)
+        if any(entry['connection'] == 'robot' and entry['tool'] in ('move', 'set_leg', 'set_servo') for entry in result['trace']):
+            await invoke(controller.stop)
+        return result
+
     async def watchdog():
         while True:
             await asyncio.sleep(1)
             if time.monotonic() - lease['last_seen'] > 15 and (controller.status().get('armed') or media.status()['microphone']['enabled']):
                 await invoke(controller.stop)
+                await assistant.cancel_all()
                 await invoke(examples.stop)
                 await invoke(media.stop)
 
@@ -166,12 +287,15 @@ def create_app(controller=None, media=None):
                     await task
                 except asyncio.CancelledError:
                     pass
+                await invoke(controller.stop)
+                await assistant.cancel_all()
                 await invoke(examples.close)
                 await invoke(controller.close)
                 await invoke(media.close)
 
     app = FastAPI(title='PiBotPal', lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.controller, app.state.media, app.state.mcp = controller, media, mcp
+    app.state.settings, app.state.assistant = settings, assistant
 
     @app.middleware('http')
     async def private_origin(request: Request, call_next):
