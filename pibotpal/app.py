@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from contextlib import asynccontextmanager
 import fcntl
+import logging
 import os
 from pathlib import Path
 import time
@@ -19,6 +20,7 @@ from .examples import ExampleRunner
 
 
 def create_app(controller=None, media=None):
+    logging.getLogger('mcp').setLevel(logging.WARNING)
     controller = controller or Controller()
     media = media or Media(simulate=os.environ.get('PIBOTPAL_SIMULATE') == '1')
     examples = ExampleRunner(controller, media, data_dir=media.root)

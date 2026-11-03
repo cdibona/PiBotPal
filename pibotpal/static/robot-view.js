@@ -68,6 +68,18 @@ export class RobotView {
     this.box(this.body,[25,23,3],[0,39,39],0x245c45);
     const lens=new THREE.Mesh(new THREE.CylinderGeometry(6,6,9,24),material(0x141c24));lens.rotation.x=Math.PI/2;lens.position.copy(point([0,45,39]));this.body.add(lens);
     const glass=new THREE.Mesh(new THREE.CircleGeometry(4.5,24),material(0x67b7ca,{emissive:0x12303c,roughness:.1}));glass.rotation.y=Math.PI;glass.position.copy(point([0,50,39]));this.body.add(glass);
+    // Microphone and speaker locations are schematic, not surveyed mount coordinates.
+    this.box(this.body,[9,4,16],[31,-10,33],0x22313c);
+    this.microphoneShell=new THREE.Mesh(new THREE.CylinderGeometry(4.5,4.5,16,16),material(0x647b86));
+    this.microphoneShell.position.copy(point([31,-10,43]));this.body.add(this.microphoneShell);
+    for(const h of [40,43,46]){const ring=new THREE.Mesh(new THREE.TorusGeometry(4.6,.5,5,16),material(0x25353e));ring.rotation.x=Math.PI/2;ring.position.copy(point([31,-10,h]));this.body.add(ring);}
+    this.microphoneLight=new THREE.Mesh(new THREE.SphereGeometry(2.5,12,8),material(0x64717b,{emissive:0x000000}));
+    this.microphoneLight.position.copy(point([31,-10,53]));this.body.add(this.microphoneLight);
+    this.microphoneLabel=this.makeLabel('MIC MUTED');this.microphoneLabel.position.copy(point([48,-10,64]));this.microphoneLabel.scale.set(58,14.5,1);this.body.add(this.microphoneLabel);
+    this.speakerShell=new THREE.Mesh(new THREE.CylinderGeometry(13,13,6,24),material(0x273b48));this.speakerShell.rotation.x=Math.PI/2;this.speakerShell.position.copy(point([0,-48,5]));this.body.add(this.speakerShell);
+    this.speakerCone=new THREE.Mesh(new THREE.CylinderGeometry(10,10,1,24),material(0x526573,{emissive:0x000000}));this.speakerCone.rotation.x=Math.PI/2;this.speakerCone.position.copy(point([0,-51.5,5]));this.body.add(this.speakerCone);
+    for(const radius of [4,7,10]){const ring=new THREE.Mesh(new THREE.TorusGeometry(radius,.45,5,24),material(0x182832));ring.position.copy(point([0,-52.1,5]));this.body.add(ring);}
+    this.speakerLabel=this.makeLabel('SPEAKER IDLE');this.speakerLabel.position.copy(point([0,-64,19]));this.speakerLabel.scale.set(64,16,1);this.body.add(this.speakerLabel);
     const front=this.makeLabel('FRONT');front.position.copy(point([0,95,-75]));front.scale.set(54,18,1);this.body.add(front);
     const positions=[[0,51,39],[-70,210,80],[70,210,80],[0,51,39],[-70,210,-3],[70,210,-3],[0,51,39],[-70,210,80],[-70,210,-3],[70,210,-3],[70,210,80]];
     const geometry=new THREE.BufferGeometry().setFromPoints(positions.map(point));
@@ -87,5 +99,12 @@ export class RobotView {
     const u=status.ultrasonic;this.range.visible=Boolean(u?.valid&&Number.isFinite(u.distance_cm));
     if(this.range.visible){const origin=point([0,60,13]),end=point([0,60+u.distance_cm*10,13]);this.rangeLine.geometry.dispose();this.rangeLine.geometry=new THREE.BufferGeometry().setFromPoints([origin,end]);this.rangeLine.computeLineDistances();this.rangeDot.position.copy(end);this.rangeLabel.position.copy(end).add(new THREE.Vector3(0,14,0));this.rangeLabel.scale.set(90,18,1);this.labelText(this.rangeLabel,`${u.distance_cm.toFixed(1)} cm`);}
     this.cameraGuide.visible=Boolean(status.camera?.enabled);
+    const listening=Boolean(status.microphone?.enabled),speaking=Boolean(status.speaker?.busy);
+    this.microphoneLight.material.color.setHex(listening?0x6ddfc2:0x64717b);
+    this.microphoneLight.material.emissive.setHex(listening?0x2c8c71:0x000000);
+    this.speakerCone.material.color.setHex(speaking?0xf0ac72:0x526573);
+    this.speakerCone.material.emissive.setHex(speaking?0x75461a:0x000000);
+    if(this.microphoneLabel.userData.state!==listening){this.labelText(this.microphoneLabel,listening?'MIC ACTIVE':'MIC MUTED');this.microphoneLabel.userData.state=listening;}
+    if(this.speakerLabel.userData.state!==speaking){this.labelText(this.speakerLabel,speaking?'SPEAKER ACTIVE':'SPEAKER IDLE');this.speakerLabel.userData.state=speaking;}
   }
 }

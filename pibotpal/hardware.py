@@ -46,7 +46,7 @@ def _vendor_moves():
     This keeps simulation hardware independent. The file is a trusted installed
     dependency, never user-supplied request data; motion names are allowlisted.
     """
-    source = Path(os.environ.get('PIBOTPAL_PICRAWLER', str(Path.home() / 'picrawler'))) / 'picrawler' / 'picrawler.py'
+    source = Path(os.environ.get('PICRAWLER_HOME', os.environ.get('PIBOTPAL_PICRAWLER', str(Path.home() / 'picrawler')))) / 'picrawler' / 'picrawler.py'
     if not source.is_file():
         spec = importlib.util.find_spec('picrawler')
         if spec is None or not spec.submodule_search_locations:
@@ -398,7 +398,9 @@ class Controller:
                     value = self._sonar.read(times=1)
                     valid = isinstance(value, (int, float)) and math.isfinite(value) and 2 <= value <= 400
                     with self._lock:
-                        self._range = {'distance_cm': round(value, 2) if valid else None, 'valid': valid, 'timestamp': time.time()}
+                        self._range = {'distance_cm': round(value, 2) if valid else None, 'valid': valid, 'timestamp': time.time(),
+                                       'raw_cm': value if isinstance(value, (int, float)) and math.isfinite(value) else None,
+                                       'error': None if valid else ('Echo timed out on D2/D3' if value == -1 else 'Incomplete echo on D2/D3' if value == -2 else 'Return outside 2–400 cm range')}
                 except Exception as exc:
                     with self._lock:
                         self._range = {'distance_cm': None, 'valid': False, 'timestamp': time.time()}

@@ -78,3 +78,26 @@ def test_calibration_read_can_run_disarmed(client):
         time.sleep(.02)
     assert status['examples']['phase'] == 'complete'
     assert not status['armed']
+
+
+def test_heartbeat_expiry_disarms_and_mutes(client, monkeypatch):
+    from types import SimpleNamespace
+    clock=[100.0]
+    monkeypatch.setattr('pibotpal.app.time', SimpleNamespace(monotonic=lambda: clock[0]))
+    call(client, 'arm', armed=True)
+    client.app.state.media._mic_enabled=True  # synthetic consent; no capture device opened
+    clock[0]+=16
+    time.sleep(1.2)
+    assert not client.app.state.controller.status()['armed']
+    assert not client.app.state.media.status()['microphone']['enabled']
+
+
+def test_microphone_lease_expires_while_disarmed(client, monkeypatch):
+    from types import SimpleNamespace
+    clock=[100.0]
+    monkeypatch.setattr('pibotpal.app.time', SimpleNamespace(monotonic=lambda: clock[0]))
+    call(client, 'get_status')
+    client.app.state.media._mic_enabled=True
+    clock[0]+=16
+    time.sleep(1.2)
+    assert not client.app.state.media.status()['microphone']['enabled']
