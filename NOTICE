@@ -1,0 +1,10 @@
+PiBotPal is distributed under GNU GPL version 3; see LICENSE.
+
+PiCrawler teaching examples and kinematic conventions adapted from
+SunFounder PiCrawler (GPL-3.0): https://github.com/sunfounder/picrawler
+The gait planner is loaded from the separately installed vendor package.
+Hardware drivers are supplied by the separately installed robot-hat package.
+
+Three.js 0.170.0 and OrbitControls are vendored under the MIT license.
+Copyright 2010-2024 Three.js Authors. See
+pibotpal/static/vendor/THREE-LICENSE.txt.

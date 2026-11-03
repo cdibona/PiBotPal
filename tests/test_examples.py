@@ -1,17 +1,19 @@
 import copy
+import json
 import tempfile
 import time
 import unittest
 from pathlib import Path
 
 from pibotpal.examples import ExampleRunner, list_examples
-from pibotpal.kinematics import inverse
+from pibotpal.kinematics import inverse, local_joints
 
 
 class FakeController:
     def __init__(self):
         self.calls = []
         self.state = {"armed": False, "busy": False, "servo_offsets": [0]*12,
+                      "servo_angles": inverse([50, 40, -45]) * 4,
                       "legs": [{"foot_local_mm": [50, 40, -45]} for _ in range(4)],
                       "ultrasonic": {"valid": True, "distance_cm": 100, "timestamp": time.time()}}
 
@@ -143,6 +145,23 @@ class ExampleTests(unittest.TestCase):
         other.run("11_record_new_step", {"operation": "play"})
         other._thread.join(timeout=2)
         self.assertEqual(other.status()["result"], {"played": 1})
+        self.assertEqual(self.controller.calls[0][0], "angles")
+
+    def test_neutral_joint_pose_replays_without_inverse_round_trip(self):
+        self.controller.state["servo_angles"] = [0] * 12
+        self.controller.state["legs"] = [{"foot_local_mm": local_joints([0, 0, 0])[-1]} for _ in range(4)]
+        self.runner.run("11_record_new_step", {"operation": "capture"})
+        self.assertEqual(self.finish()["phase"], "complete")
+        self.controller.state["armed"] = True
+        self.runner.run("11_record_new_step", {"operation": "play"})
+        self.assertEqual(self.finish()["phase"], "complete")
+        self.assertEqual(self.controller.calls, [("angles", [0] * 12)])
+
+    def test_legacy_coordinate_pose_replays(self):
+        (Path(self.directory.name) / "saved_steps.json").write_text(json.dumps([[[50, 40, -45]] * 4]))
+        self.controller.state["armed"] = True
+        self.runner.run("11_record_new_step", {"operation": "play"})
+        self.assertEqual(self.finish()["result"], {"played": 1})
         self.assertEqual(self.controller.calls[0][0], "pose")
 
     def test_generated_custom_gestures_stay_in_workspace(self):

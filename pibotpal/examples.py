@@ -51,7 +51,7 @@ CATALOG = [
     entry("8_treasure_hunt.py", "Treasure hunt", "Find a selected color for up to 30 seconds. Use dashboard movement controls to search; this test never moves automatically.", ("camera",), color=choice(*COLORS), seconds=SECONDS),
     entry("9_do_step.py", "Custom step", "Stand, lift the left rear foot, then return to stand once.", ("motion",), speed=SPEED),
     entry("10_do_single_leg.py", "Single leg", "Move one foot in the vendor leg-local coordinate system, in millimeters.", ("motion",), leg=number(0, 0, 3, "0 right front, 1 left front, 2 left rear, 3 right rear", True), x=number(50, 0, 120), y=number(45, 0, 120), z=number(-40, -90, 30), speed=SPEED),
-    entry("11_record_new_step.py", "Record new steps", "Capture commanded foot positions, replay up to 20 saved poses, or clear the saved sequence. Arm only to play. Stored locally across restarts.", ("motion_optional",), operation=choice("capture", "play", "clear"), speed=SPEED),
+    entry("11_record_new_step.py", "Record new steps", "Capture commanded joint angles and foot positions, replay up to 20 saved poses, or clear the saved sequence. Arm only to play. Stored locally across restarts.", ("motion_optional",), operation=choice("capture", "play", "clear"), speed=SPEED),
     entry("12_twist.py", "Twist", "One small body-sway cycle. Amplitude is reduced from the teaching example to stay within the joint limits.", ("motion",), speed=SPEED),
     entry("13_emotional_robot.py", "Emotional robot", "One bounded expressive routine using the shared movement controller.", ("motion",), emotion=choice("handwork", "twist", "pushup", "swimming"), speed=SPEED),
     entry("14_preset_actions.py", "Preset actions", "Bounded adaptations of the preset gestures, with reduced travel. Play-dead lowers into a resting pose rather than attempting a rollover.", ("motion",), action=choice(*PRESETS), speed=SPEED),
@@ -418,14 +418,23 @@ class ExampleRunner:
                 coords = [leg.get("foot_local_mm") for leg in state.get("legs", [])]
             if len(coords) != 4 or any(p is None for p in coords):
                 raise RuntimeError("No commanded pose yet; move to a known pose first")
-            poses.append(coords)
+            angles = state.get("servo_angles", [])
+            if len(angles) != 12 or any(isinstance(a, bool) or not isinstance(a, (int, float)) or not math.isfinite(a) for a in angles):
+                raise RuntimeError("No complete commanded joint pose to record")
+            # Preserve the commands themselves: a valid joint pose can lie
+            # outside the narrower inverse-kinematics foot workspace.
+            poses.append({"angles": angles, "coords": coords})
         elif operation == "clear":
             poses = []
         else:
             if not poses:
                 raise ValueError("No saved poses to replay")
             for pose in poses:
-                self._pose(pose, speed)
+                if isinstance(pose, dict):
+                    self._motion("set_angles", pose["angles"], speed=speed)
+                else:
+                    # Compatibility with earlier coordinate-only saves.
+                    self._pose(pose, speed)
             return {"played": len(poses)}
         self.data_dir.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(".tmp")

@@ -28,7 +28,7 @@ Initialize an MCP Streamable HTTP session at `/mcp`, then use `tools/list` and `
 
 Tools: `get_status`, `arm`, `stop`, `move`, `set_leg`, `set_servo`, `set_offsets`, `list_examples`, `run_example`, `camera`, `microphone`, `speak`, `play_sound`, `record_video`.
 
-Read status, explicitly arm, and issue bounded actions. Poll `get_status` at least every 5 seconds while armed. After 15 seconds without a status heartbeat the server cancels movement and disarms. Stop cancels work, disarms, and mutes audio; it does **not** cut servo power. This is a software control, not a hardware emergency power switch. No physical pose is assumed on startup. Use a known pose command before editing individual legs. Do not run separate vendor programs while this server owns the hardware.
+Read status, explicitly arm, and issue bounded actions. Poll `get_status` at least every 5 seconds while armed. The heartbeat is shared by connected clients: any client polling status keeps the control lease alive. After 15 seconds without a status heartbeat the server cancels movement and disarms. Stop cancels work, disarms, and mutes audio; it does **not** cut servo power. This is a software control, not a hardware emergency power switch. No physical pose is assumed on startup. Use a known pose command before editing individual legs. Do not run separate vendor programs while this server owns the hardware.
 
 Camera frames and audio use separate media URLs for efficient streaming; their controls go through MCP. `/audio.wav` cannot open the microphone while muted. Recordings are silent, bounded to 30 seconds, and saved under `~/.local/share/pibotpal/recordings`; the dashboard offers downloads. Microphone audio is live only and is not stored.
 
@@ -50,3 +50,7 @@ PIBOTPAL_SIMULATE=1 .venv/bin/python -m pytest -q
 Android is a future client of this same MCP contract; no Android binary is included in this first web implementation.
 
 Protocol/hosting references: [official MCP Python SDK](https://github.com/modelcontextprotocol/python-sdk), [Tailscale Serve](https://tailscale.com/docs/features/tailscale-serve).
+
+## License
+
+GNU GPL v3; see `LICENSE` and `NOTICE`. Vendored Three.js retains its MIT license.
