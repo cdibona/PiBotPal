@@ -10,4 +10,7 @@
     <RootNamespace>PiBotPal.Windows</RootNamespace>
     <Version>0.1.0</Version>
   </PropertyGroup>
+  <ItemGroup>
+    <None Include="../LICENSE" Link="LICENSE.txt" CopyToOutputDirectory="PreserveNewest" CopyToPublishDirectory="PreserveNewest" />
+  </ItemGroup>
 </Project>
