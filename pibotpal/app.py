@@ -358,6 +358,18 @@ def create_app(controller=None, media=None):
             raise HTTPException(409, 'Wait for the recording to finish')
         return FileResponse(path, filename=path.name, media_type='video/x-msvideo')
 
+    @app.get('/downloads/{name}')
+    async def client_download(name: str):
+        types = {'PiBotPal-Android.apk': 'application/vnd.android.package-archive',
+                 'PiBotPal-Windows-x64.zip': 'application/zip', 'build.json': 'application/json'}
+        if name not in types:
+            raise HTTPException(404)
+        path = media.root / 'downloads' / name
+        if not path.is_file():
+            raise HTTPException(404, 'Client build has not been installed on this robot')
+        return FileResponse(path, filename=name, media_type=types[name],
+                            headers={'Cache-Control': 'no-cache'})
+
     static = Path(__file__).parent / 'static'
     @app.get('/')
     async def index():

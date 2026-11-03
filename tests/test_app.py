@@ -146,3 +146,19 @@ def test_power_telemetry_distinguishes_unknown_values(client):
     assert power['powered']
     assert power['charging'] is None and power['estimated_runtime_minutes'] is None
     assert power['voltage'] is None and not power['valid']
+
+
+def test_app_downloads_are_allowlisted_attachments(client, tmp_path):
+    directory = tmp_path / 'downloads'
+    directory.mkdir()
+    (directory / 'PiBotPal-Android.apk').write_bytes(b'APK build')
+    (directory / 'PiBotPal-Windows-x64.zip').write_bytes(b'ZIP build')
+    (directory / 'secret.txt').write_text('not downloadable')
+    for name, kind in [('PiBotPal-Android.apk', 'application/vnd.android.package-archive'),
+                       ('PiBotPal-Windows-x64.zip', 'application/zip')]:
+        response = client.get('/downloads/' + name)
+        assert response.status_code == 200
+        assert response.headers['content-type'] == kind
+        assert 'attachment;' in response.headers['content-disposition']
+    assert client.get('/downloads/secret.txt').status_code == 404
+    assert client.get('/downloads/build.json').status_code == 404

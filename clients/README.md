@@ -17,6 +17,16 @@ Leaving the foreground or losing the connection sends a best-effort stop and req
 
 Power display shows measured voltage. It does not invent charge percentage, charging state, or estimated runtime. Null/invalid readings are shown as unavailable. A responsive robot service establishes that the Pi is powered, not whether it is charging.
 
+## Download from the robot
+
+Open the **PiBotPal apps** section at the bottom of the [robot website](https://spiderbot.tail689a35.ts.net/#apps). Downloads are served directly by the robot over Tailscale; no GitHub login is needed.
+
+- [Android APK](https://spiderbot.tail689a35.ts.net/downloads/PiBotPal-Android.apk)
+- [Windows x64 ZIP](https://spiderbot.tail689a35.ts.net/downloads/PiBotPal-Windows-x64.zip)
+- [Build source and SHA-256 checksums](https://spiderbot.tail689a35.ts.net/downloads/build.json)
+
+To refresh the hosted files from the latest successful main-branch client build, run `python3 scripts/sync-client-downloads.py` on the robot with GitHub CLI authentication. Files live under `~/.local/share/pibotpal/downloads`, outside Git. An explicit successful build can be selected with `--run ID`.
+
 ## Download CI builds
 
 The **Native clients** GitHub Actions workflow creates:
@@ -71,4 +81,4 @@ Compatibility references: [AGP 8.7 requirements](https://developer.android.com/b
 
 ## License
 
-Original Android and Windows client source is MIT licensed; see `clients/LICENSE`. These clients use HTTP/MCP and do not bundle the GPL SunFounder Python libraries used by the robot service. Platform and runtime dependencies retain their upstream licenses.
+Original Android and Windows client source is MIT licensed; see `clients/LICENSE`. These clients use HTTP/MCP and do not bundle SunFounder Python libraries. Platform and runtime dependencies retain their upstream licenses.
