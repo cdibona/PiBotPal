@@ -47,7 +47,15 @@ dotnet run --project clients/windows-tests/PiBotPal.TransportTests.csproj -c Rel
 dotnet publish clients/windows/PiBotPal.Windows.csproj -c Release -r win-x64 --self-contained true -o dist/windows
 ```
 
-`EnableWindowsTargeting` allows compile checks from another OS with a .NET SDK and internet access for the Windows targeting pack. Only Windows can validate the running WPF UI. For ARM64 Windows, publish with `-r win-arm64` instead.
+`EnableWindowsTargeting` allows compile checks from another OS with a .NET SDK and internet access for the Windows targeting pack. Only Windows can validate the running WPF UI. A compile check and the transport parser tests have passed on the Pi, and the native C# transport received real MCP status and an MJPEG frame over Tailscale HTTPS without moving the robot. For ARM64 Windows, publish with `-r win-arm64` instead.
+
+For a read-only transport check against a running robot:
+
+```sh
+dotnet run --project clients/windows-tests/PiBotPal.TransportTests.csproj -c Release -- --smoke https://spiderbot.tail689a35.ts.net
+```
+
+This initializes MCP, reads status, and decodes one camera frame. It does not arm or move the robot.
 
 The Windows client saves its endpoint under `%LOCALAPPDATA%\PiBotPal\client.json`; Android uses private SharedPreferences. Keys and other admin settings remain on the robot.
 

@@ -13,7 +13,9 @@ public partial class MainWindow : Window
     private readonly SemaphoreSlim commandGate = new(1, 1);
     private readonly CancellationTokenSource lifetime = new();
     private CancellationTokenSource? videoCancellation;
-    private bool foreground, connected, pending, armed, busy, cameraOn, closing;
+    private bool foreground, connected, pending, armed, busy, cameraOn, closing, closeCompleted;
+    private long commandEpoch;
+    private int stopping;
     private readonly string settingsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PiBotPal", "client.json");
 
     public MainWindow()
@@ -42,7 +44,7 @@ public partial class MainWindow : Window
 
     private async void Connect_Click(object sender, RoutedEventArgs e)
     {
-        if (pending) return;
+        if (pending || stopping > 0) return;
         McpClient target;
         try { target = new McpClient(AddressBox.Text); }
         catch (Exception error) { ErrorText.Text = error.Message; return; }
@@ -55,11 +57,12 @@ public partial class MainWindow : Window
         client = target;
         ConnectionText.Text = "Connecting…";
         ErrorText.Text = "";
+        var epoch = commandEpoch;
         try
         {
             await target.InitializeAsync(lifetime.Token);
             var state = await target.CallAsync("get_status", cancellationToken: lifetime.Token);
-            if (!foreground) { await target.CallAsync("stop"); return; }
+            if (!foreground || epoch != commandEpoch) { await target.CallAsync("stop"); return; }
             connected = true;
             Directory.CreateDirectory(Path.GetDirectoryName(settingsPath)!);
             File.WriteAllText(settingsPath, new JsonObject { ["url"] = target.BaseUrl }.ToJsonString());
@@ -78,11 +81,12 @@ public partial class MainWindow : Window
             {
                 await Task.Delay(1000, lifetime.Token);
                 var target = client;
+                var epoch = commandEpoch;
                 if (!foreground || !connected || target is null) continue;
                 try
                 {
                     var state = await target.CallAsync("get_status", cancellationToken: lifetime.Token);
-                    if (target == client && connected && foreground) Render(state);
+                    if (target == client && connected && foreground && epoch == commandEpoch) Render(state);
                 }
                 catch (Exception error) when (!lifetime.IsCancellationRequested)
                 {
@@ -96,15 +100,16 @@ public partial class MainWindow : Window
     private async Task CommandAsync(string tool, JsonObject arguments)
     {
         var target = client;
-        if (!connected || !foreground || pending || target is null) return;
+        if (!connected || !foreground || pending || stopping > 0 || target is null) return;
         pending = true; UpdateControls(); ErrorText.Text = "";
+        var epoch = commandEpoch;
         await commandGate.WaitAsync();
         try
         {
-            if (!foreground || !connected) return;
+            if (!foreground || !connected || epoch != commandEpoch) return;
             await target.CallAsync(tool, arguments, lifetime.Token);
             var state = await target.CallAsync("get_status", cancellationToken: lifetime.Token);
-            if (target == client && connected && foreground) Render(state);
+            if (target == client && connected && foreground && epoch == commandEpoch) Render(state);
         }
         catch (Exception error) { ErrorText.Text = error.Message; }
         finally { commandGate.Release(); pending = false; UpdateControls(); }
@@ -114,12 +119,20 @@ public partial class MainWindow : Window
     {
         var target = client;
         if (target is null) return;
+        commandEpoch++;
+        stopping++;
         armed = false; UpdateControls();
         // Immediate stop is followed by a second stop after already-submitted commands.
         try { await target.CallAsync("stop"); } catch { }
         await commandGate.WaitAsync();
         try { await target.CallAsync("stop"); } catch { }
-        finally { commandGate.Release(); }
+        finally {
+            commandGate.Release();
+            commandEpoch++; // discard telemetry sampled before final stop acknowledgement
+            stopping--;
+            armed = false;
+            UpdateControls();
+        }
     }
 
     private async void Stop_Click(object sender, RoutedEventArgs e)
@@ -141,7 +154,7 @@ public partial class MainWindow : Window
 
     private void Render(JsonObject state)
     {
-        armed = state["armed"]?.GetValue<bool>() == true;
+        armed = stopping == 0 && state["armed"]?.GetValue<bool>() == true;
         busy = state["busy"]?.GetValue<bool>() == true;
         cameraOn = state["camera"]?["enabled"]?.GetValue<bool>() == true;
         var voltage = state["battery_voltage"]?.GetValue<double>();
@@ -222,15 +235,15 @@ public partial class MainWindow : Window
     private void UpdateControls()
     {
         if (ArmButton is null) return;
-        ArmButton.IsEnabled = connected && foreground && !pending && !busy;
-        CameraButton.IsEnabled = connected && foreground && !pending;
-        ConnectButton.IsEnabled = !pending;
+        ArmButton.IsEnabled = connected && foreground && !pending && !busy && stopping == 0;
+        CameraButton.IsEnabled = connected && foreground && !pending && stopping == 0;
+        ConnectButton.IsEnabled = !pending && stopping == 0;
         foreach (var button in new[] { LeftButton, RightButton, ForwardButton, BackwardButton, StandButton, SitButton })
-            button.IsEnabled = connected && foreground && armed && !busy && !pending;
+            button.IsEnabled = connected && foreground && armed && !busy && !pending && stopping == 0;
     }
     private async void ClosingWindow(object? sender, CancelEventArgs e)
     {
-        if (closing) return;
+        if (closing) { e.Cancel = !closeCompleted; return; }
         e.Cancel = true;
         closing = true;
         foreground = connected = false;
@@ -239,6 +252,7 @@ public partial class MainWindow : Window
         await Task.WhenAny(StopRobotAsync(), Task.Delay(2000));
         lifetime.Cancel();
         client?.Dispose();
+        closeCompleted = true;
         Close();
     }
 }

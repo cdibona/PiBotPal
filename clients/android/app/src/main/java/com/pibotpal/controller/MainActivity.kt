@@ -25,6 +25,8 @@ class MainActivity : Activity() {
     @Volatile private var foreground = false
     @Volatile private var connected = false
     @Volatile private var pending = false
+    @Volatile private var commandEpoch = 0L
+    private var stopping = 0
     private var armed = false
     private var busy = false
     private var cameraOn = false
@@ -47,10 +49,11 @@ class MainActivity : Activity() {
         override fun run() {
             if (foreground && connected && polling.compareAndSet(false, true)) {
                 val target = client
+                val epoch = commandEpoch
                 polls.execute {
                     try {
                         val state = target?.call("get_status")
-                        ui.post { if (foreground && target === client && connected && state != null) render(state) }
+                        ui.post { if (foreground && target === client && connected && epoch == commandEpoch && state != null) render(state) }
                     } catch (e: Exception) {
                         ui.post { if (target === client) disconnected(e.message ?: "Connection lost") }
                     } finally { polling.set(false) }
@@ -129,6 +132,7 @@ class MainActivity : Activity() {
     }
 
     private fun connect() {
+        if (pending || stopping > 0) return
         val target = try { McpClient(address.text.toString()) } catch (e: Exception) { errorLabel.text = e.message; return }
         stopRobot()
         stopVideo()
@@ -138,11 +142,13 @@ class MainActivity : Activity() {
         errorLabel.text = ""
         pending = true; updateControls()
         commands.execute {
+            val epoch = commandEpoch
             try {
+                if (!foreground) return@execute
                 target.initialize()
                 val state = target.call("get_status")
                 ui.post {
-                    if (foreground && target === client) {
+                    if (foreground && target === client && epoch == commandEpoch) {
                         connected = true
                         getPreferences(MODE_PRIVATE).edit().putString("robot_url", target.baseUrl).apply()
                         connectionLabel.text = "Connected · MCP"
@@ -156,14 +162,15 @@ class MainActivity : Activity() {
 
     private fun command(tool: String, arguments: JSONObject) {
         val target = client ?: return
-        if (!connected || pending || !foreground) return
+        if (!connected || pending || !foreground || stopping > 0) return
         pending = true; updateControls(); errorLabel.text = ""
+        val epoch = commandEpoch
         commands.execute {
             try {
-                if (!foreground) return@execute
+                if (!foreground || epoch != commandEpoch) return@execute
                 target.call(tool, arguments)
                 val state = target.call("get_status")
-                ui.post { if (foreground && target === client && connected) render(state) }
+                ui.post { if (foreground && target === client && connected && epoch == commandEpoch) render(state) }
             } catch (e: Exception) { ui.post { errorLabel.text = e.message ?: "Command failed" } }
             finally { ui.post { pending = false; updateControls() } }
         }
@@ -172,14 +179,26 @@ class MainActivity : Activity() {
     /** Send an immediate stop, then another after any already-submitted arm/move finishes. */
     private fun stopRobot() {
         val target = client ?: return
+        commandEpoch++
+        stopping++
         armed = false
         updateControls()
         Thread({ runCatching { target.call("stop") } }, "pibotpal-immediate-stop").start()
-        if (!commands.isShutdown) commands.execute { runCatching { target.call("stop") } }
+        if (!commands.isShutdown) commands.execute {
+            runCatching { target.call("stop") }
+            ui.post {
+                if (target === client) {
+                    commandEpoch++ // discard telemetry sampled before the final stop completed
+                    armed = false
+                }
+                stopping--
+                updateControls()
+            }
+        } else stopping--
     }
 
     private fun render(state: JSONObject) {
-        armed = state.optBoolean("armed")
+        armed = stopping == 0 && state.optBoolean("armed")
         busy = state.optBoolean("busy")
         cameraOn = state.optJSONObject("camera")?.optBoolean("enabled") == true
         val power = state.optJSONObject("power")
@@ -243,9 +262,9 @@ class MainActivity : Activity() {
 
     private fun updateControls() {
         if (!::armButton.isInitialized) return
-        armButton.isEnabled = connected && foreground && !pending && !busy
-        cameraButton.isEnabled = connected && foreground && !pending
-        motionButtons.forEach { it.isEnabled = connected && foreground && armed && !busy && !pending }
+        armButton.isEnabled = connected && foreground && !pending && !busy && stopping == 0
+        cameraButton.isEnabled = connected && foreground && !pending && stopping == 0
+        motionButtons.forEach { it.isEnabled = connected && foreground && armed && !busy && !pending && stopping == 0 }
     }
 
     private fun moveButton(label: String, action: String): Button = button(label) { command("move", JSONObject().put("name", action).put("speed", speed.progress + 10).put("steps", 1)) }.also { motionButtons.add(it) }
