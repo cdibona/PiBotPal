@@ -1,0 +1,43 @@
+<Window x:Class="PiBotPal.Windows.MainWindow" xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation" xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="PiBotPal — Crawler control" Width="1050" Height="860" MinWidth="720" MinHeight="650" Background="#0C1217" Foreground="#DFE8ED" FontFamily="Segoe UI">
+    <DockPanel Margin="24">
+        <Grid DockPanel.Dock="Top" Margin="0,0,0,18">
+            <Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+            <StackPanel><TextBlock Text="PiBotPal" FontSize="30" FontWeight="SemiBold"/><TextBlock Text="CRAWLER CONTROL · MCP" Foreground="#77B8AB" FontSize="11"/></StackPanel>
+            <Button x:Name="StopButton" Grid.Column="1" Content="■ STOP" Width="145" FontSize="18" Background="#783339" BorderBrush="#BA6670" Click="Stop_Click" ToolTip="Cancel movement and disarm; servo power stays on"/>
+        </Grid>
+        <ScrollViewer VerticalScrollBarVisibility="Auto">
+            <StackPanel>
+                <TextBlock x:Name="ConnectionText" Text="Disconnected · connect through Tailscale" Margin="0,0,0,8"/>
+                <Grid><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    <TextBox x:Name="AddressBox" AutomationProperties.Name="Robot base URL"/>
+                    <Button x:Name="ConnectButton" Grid.Column="1" Content="Connect" Click="Connect_Click"/>
+                </Grid>
+                <UniformGrid Columns="3" Margin="0,18">
+                    <StackPanel><TextBlock Text="BATTERY / POWER" Foreground="#8CA4AE"/><TextBlock x:Name="PowerText" Text="— V" FontSize="29" Foreground="#6DDFC2"/><TextBlock Text="Powered while connected · charging/runtime unknown" FontSize="11" TextWrapping="Wrap"/></StackPanel>
+                    <StackPanel><TextBlock Text="MOTION" Foreground="#8CA4AE"/><TextBlock x:Name="MotionText" Text="Disarmed" FontSize="24" TextWrapping="Wrap"/></StackPanel>
+                    <StackPanel><TextBlock Text="FRONT RANGE" Foreground="#8CA4AE"/><TextBlock x:Name="RangeText" Text="— cm" FontSize="29"/></StackPanel>
+                </UniformGrid>
+                <Border Background="#05090B" Height="360" CornerRadius="8"><Image x:Name="VideoImage" Stretch="Uniform" AutomationProperties.Name="Live robot camera"/></Border>
+                <Grid Margin="0,8"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                    <TextBlock x:Name="VideoText" Text="Camera disconnected" VerticalAlignment="Center"/>
+                    <Button x:Name="CameraButton" Grid.Column="1" Content="Enable camera" Click="Camera_Click"/>
+                </Grid>
+                <Grid Margin="0,8"><Grid.ColumnDefinitions><ColumnDefinition Width="220"/><ColumnDefinition/></Grid.ColumnDefinitions>
+                    <Button x:Name="ArmButton" Content="Arm motion" Click="Arm_Click"/>
+                    <StackPanel Grid.Column="1" Margin="16,0"><TextBlock x:Name="SpeedText" Text="Movement speed: 35% · one gait cycle per press"/><Slider x:Name="SpeedSlider" Minimum="10" Maximum="60" Value="35" TickFrequency="1" IsSnapToTickEnabled="True" Margin="0,12,0,0" ValueChanged="Speed_Changed"/></StackPanel>
+                </Grid>
+                <UniformGrid Columns="3">
+                    <Button x:Name="LeftButton" Content="↶ Turn left" Tag="turn left" Click="Move_Click"/>
+                    <Button x:Name="ForwardButton" Content="↑ Forward" Tag="forward" Click="Move_Click"/>
+                    <Button x:Name="RightButton" Content="Turn right ↷" Tag="turn right" Click="Move_Click"/>
+                    <Button x:Name="StandButton" Content="Stand" Tag="stand" Click="Move_Click"/>
+                    <Button x:Name="BackwardButton" Content="↓ Backward" Tag="backward" Click="Move_Click"/>
+                    <Button x:Name="SitButton" Content="Sit" Tag="sit" Click="Move_Click"/>
+                </UniformGrid>
+                <TextBlock Margin="0,16,0,0" Text="Microphone capture is never enabled by this app. Moving away from this window stops motion. STOP holds the last servo command; it does not remove power." Foreground="#92AAB4" TextWrapping="Wrap"/>
+                <TextBlock x:Name="ErrorText" Foreground="#F39B9B" TextWrapping="Wrap" Margin="0,12,0,12"/>
+            </StackPanel>
+        </ScrollViewer>
+    </DockPanel>
+</Window>

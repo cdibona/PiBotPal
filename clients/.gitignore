@@ -1,0 +1,9 @@
+**/.gradle/
+**/build/
+**/bin/
+**/obj/
+**/local.properties
+**/.idea/
+**/*.user
+**/*.suo
+dist/

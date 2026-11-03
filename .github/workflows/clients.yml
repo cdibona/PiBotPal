@@ -1,0 +1,55 @@
+name: Native clients
+on:
+  push:
+    branches: [main]
+    paths: ['clients/**', '.github/workflows/clients.yml']
+  pull_request:
+    paths: ['clients/**', '.github/workflows/clients.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  android:
+    name: Android APK
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+      - name: Install Android platform
+        run: sdkmanager 'platforms;android-35' 'build-tools;34.0.0'
+      - name: Build and test Android
+        run: gradle -p clients/android :app:assembleDebug :app:testDebugUnitTest --no-daemon
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PiBotPal-Android-debug
+          path: clients/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
+  windows:
+    name: Windows desktop
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '10.0.x'
+      - name: Test transport parsing
+        run: dotnet run --project clients/windows-tests/PiBotPal.TransportTests.csproj -c Release
+      - name: Publish Windows x64
+        run: dotnet publish clients/windows/PiBotPal.Windows.csproj -c Release -r win-x64 --self-contained true -o dist/windows
+      - name: Package Windows client
+        shell: pwsh
+        run: Compress-Archive -Path dist/windows/* -DestinationPath dist/PiBotPal-Windows-x64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PiBotPal-Windows-x64
+          path: dist/PiBotPal-Windows-x64.zip
+          if-no-files-found: error
