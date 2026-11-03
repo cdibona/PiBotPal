@@ -16,6 +16,9 @@ public partial class MainWindow : Window
     private bool foreground, connected, pending, armed, busy, cameraOn, closing, closeCompleted;
     private long commandEpoch;
     private int stopping;
+    private bool planRunning, replacingPlanList;
+    private string? editingPlanId;
+    private sealed record SavedItem(string Id, string Name, JsonObject Data) { public override string ToString() => Name; }
     private readonly string settingsPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "PiBotPal", "client.json");
 
     public MainWindow()
@@ -68,6 +71,8 @@ public partial class MainWindow : Window
             File.WriteAllText(settingsPath, new JsonObject { ["url"] = target.BaseUrl }.ToJsonString());
             ConnectionText.Text = "Connected · MCP";
             Render(state);
+            var catalog = await target.CallAsync("plan_list", cancellationToken: lifetime.Token);
+            if (target == client && connected && foreground && epoch == commandEpoch) RenderPlans(catalog);
         }
         catch (Exception error) { await DisconnectedAsync(error.Message); }
         finally { pending = false; UpdateControls(); }
@@ -97,7 +102,7 @@ public partial class MainWindow : Window
         catch (OperationCanceledException) { }
     }
 
-    private async Task CommandAsync(string tool, JsonObject arguments)
+    private async Task CommandAsync(string tool, JsonObject arguments, Action<JsonObject>? completed = null)
     {
         var target = client;
         if (!connected || !foreground || pending || stopping > 0 || target is null) return;
@@ -107,7 +112,8 @@ public partial class MainWindow : Window
         try
         {
             if (!foreground || !connected || epoch != commandEpoch) return;
-            await target.CallAsync(tool, arguments, lifetime.Token);
+            var result = await target.CallAsync(tool, arguments, lifetime.Token);
+            if (target == client && connected && foreground && epoch == commandEpoch) completed?.Invoke(result);
             var state = await target.CallAsync("get_status", cancellationToken: lifetime.Token);
             if (target == client && connected && foreground && epoch == commandEpoch) Render(state);
         }
@@ -156,6 +162,9 @@ public partial class MainWindow : Window
     {
         armed = stopping == 0 && state["armed"]?.GetValue<bool>() == true;
         busy = state["busy"]?.GetValue<bool>() == true;
+        var execution = state["plan"] as JsonObject;
+        planRunning = execution?["running"]?.GetValue<bool>() == true;
+        PlanStatusText.Text = execution is null ? "Plan status unavailable" : $"{execution["phase"]?.GetValue<string>() ?? "idle"} · step {(execution["step_index"]?.GetValue<int>() ?? 0) + 1}" + (execution["error"] is JsonNode error ? $" · {error.GetValue<string>()}" : "");
         cameraOn = state["camera"]?["enabled"]?.GetValue<bool>() == true;
         var voltage = state["battery_voltage"]?.GetValue<double>();
         var fresh = state["power"]?["valid"]?.GetValue<bool>() != false;
@@ -239,8 +248,93 @@ public partial class MainWindow : Window
         CameraButton.IsEnabled = connected && foreground && !pending && stopping == 0;
         ConnectButton.IsEnabled = !pending && stopping == 0;
         foreach (var button in new[] { LeftButton, RightButton, ForwardButton, BackwardButton, StandButton, SitButton })
-            button.IsEnabled = connected && foreground && armed && !busy && !pending && stopping == 0;
+            button.IsEnabled = connected && foreground && armed && !busy && !planRunning && !pending && stopping == 0;
+        foreach (var button in new[] { RefreshPlansButton, CapturePoseButton, DeletePoseButton, DraftPlanButton, SavePlanButton, DeletePlanButton })
+            button.IsEnabled = connected && foreground && !pending && stopping == 0;
+        RunPlanButton.IsEnabled = connected && foreground && armed && !busy && !planRunning && !pending && stopping == 0 && PlanList.SelectedItem is SavedItem;
     }
+
+    private async Task RefreshPlansAsync() => await CommandAsync("plan_list", new JsonObject(), RenderPlans);
+    private async void RefreshPlans_Click(object sender, RoutedEventArgs e) => await RefreshPlansAsync();
+    private void RenderPlans(JsonObject catalog)
+    {
+        var selected = (PlanList.SelectedItem as SavedItem)?.Id;
+        var poses = (catalog["poses"] as JsonArray ?? new()).OfType<JsonObject>()
+            .Select(p => new SavedItem(p["id"]!.GetValue<string>(), p["name"]!.GetValue<string>(), p.DeepClone().AsObject())).ToList();
+        PoseList.ItemsSource = poses;
+        if (poses.Count > 0) PoseList.SelectedIndex = 0;
+        var plans = (catalog["plans"] as JsonArray ?? new()).OfType<JsonObject>()
+            .Select(p => new SavedItem(p["id"]!.GetValue<string>(), p["name"]!.GetValue<string>(), p.DeepClone().AsObject())).ToList();
+        replacingPlanList = true;
+        PlanList.ItemsSource = plans;
+        // Refresh does not replace an unsaved editor with a selected plan.
+        if (selected is not null) PlanList.SelectedItem = plans.FirstOrDefault(p => p.Id == selected);
+        replacingPlanList = false;
+        UpdateControls();
+    }
+    private async Task PlanOperationAsync(string tool, JsonObject args)
+    {
+        var changed = false;
+        await CommandAsync(tool, args, _ => changed = true);
+        if (changed) await RefreshPlansAsync();
+    }
+    private async void CapturePose_Click(object sender, RoutedEventArgs e) =>
+        await PlanOperationAsync("pose_save", new JsonObject { ["name"] = PoseNameBox.Text });
+    private async void DeletePose_Click(object sender, RoutedEventArgs e)
+    {
+        if (PoseList.SelectedItem is SavedItem pose) await PlanOperationAsync("pose_delete", new JsonObject { ["pose_id"] = pose.Id });
+    }
+    private void InsertPose_Click(object sender, RoutedEventArgs e)
+    {
+        if (PoseList.SelectedItem is not SavedItem pose) return;
+        try {
+            var steps = JsonNode.Parse(PlanStepsBox.Text) as JsonArray ?? throw new ArgumentException("Steps must be a JSON array");
+            steps.Add(new JsonObject { ["type"] = "pose", ["pose_id"] = pose.Id, ["speed"] = 35 });
+            PlanStepsBox.Text = steps.ToJsonString(new() { WriteIndented = true });
+        } catch (Exception error) { ErrorText.Text = error.Message; }
+    }
+    private async void DraftPlan_Click(object sender, RoutedEventArgs e)
+    {
+        await CommandAsync("plan_draft", new JsonObject { ["text"] = PlanPromptBox.Text, ["use_llm"] = UsePlanLlmCheckBox.IsChecked == true }, draft => {
+            editingPlanId = null; PlanList.SelectedIndex = -1;
+            PlanNameBox.Text = draft["name"]?.GetValue<string>() ?? "Draft plan";
+            PlanStepsBox.Text = (draft["steps"] as JsonArray ?? new()).ToJsonString(new() { WriteIndented = true });
+            PlanStatusText.Text = "Draft only · review and save before running";
+        });
+    }
+    private async void SavePlan_Click(object sender, RoutedEventArgs e)
+    {
+        try {
+            var steps = JsonNode.Parse(PlanStepsBox.Text) as JsonArray ?? throw new ArgumentException("Steps must be a JSON array");
+            var args = new JsonObject { ["name"] = PlanNameBox.Text, ["steps"] = steps };
+            if (editingPlanId is not null) args["plan_id"] = editingPlanId;
+            var changed = false;
+            await CommandAsync("plan_save", args, saved => { editingPlanId = saved["id"]?.GetValue<string>(); changed = true; });
+            if (changed) await RefreshPlansAsync();
+        } catch (Exception error) { ErrorText.Text = error.Message; }
+    }
+    private void NewPlan_Click(object sender, RoutedEventArgs e)
+    {
+        editingPlanId = null; PlanList.SelectedIndex = -1; PlanNameBox.Text = "My plan"; PlanStepsBox.Text = "[]";
+    }
+    private void PlanList_Changed(object sender, SelectionChangedEventArgs e)
+    {
+        if (replacingPlanList || PlanList.SelectedItem is not SavedItem plan) { UpdateControls(); return; }
+        editingPlanId = plan.Id; PlanNameBox.Text = plan.Name;
+        PlanStepsBox.Text = (plan.Data["steps"] as JsonArray ?? new()).ToJsonString(new() { WriteIndented = true });
+        UpdateControls();
+    }
+    private async void RunPlan_Click(object sender, RoutedEventArgs e)
+    {
+        if (armed && !busy && !planRunning && PlanList.SelectedItem is SavedItem plan)
+            await CommandAsync("plan_run", new JsonObject { ["plan_id"] = plan.Id });
+    }
+    private async void DeletePlan_Click(object sender, RoutedEventArgs e)
+    {
+        if (PlanList.SelectedItem is not SavedItem plan) return;
+        await PlanOperationAsync("plan_delete", new JsonObject { ["plan_id"] = plan.Id });
+    }
+
     private async void ClosingWindow(object? sender, CancelEventArgs e)
     {
         if (closing) { e.Cancel = !closeCompleted; return; }

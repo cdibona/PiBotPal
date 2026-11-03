@@ -18,6 +18,7 @@
                     <StackPanel><TextBlock Text="MOTION" Foreground="#8CA4AE"/><TextBlock x:Name="MotionText" Text="Disarmed" FontSize="24" TextWrapping="Wrap"/></StackPanel>
                     <StackPanel><TextBlock Text="FRONT RANGE" Foreground="#8CA4AE"/><TextBlock x:Name="RangeText" Text="— cm" FontSize="29"/></StackPanel>
                 </UniformGrid>
+                <TabControl Background="#0C1217" BorderBrush="#49616B"><TabItem Header="Controller"><StackPanel TextElement.Foreground="#DFE8ED">
                 <Border Background="#05090B" Height="360" CornerRadius="8"><Image x:Name="VideoImage" Stretch="Uniform" AutomationProperties.Name="Live robot camera"/></Border>
                 <Grid Margin="0,8"><Grid.ColumnDefinitions><ColumnDefinition/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                     <TextBlock x:Name="VideoText" Text="Camera disconnected" VerticalAlignment="Center"/>
@@ -36,6 +37,30 @@
                     <Button x:Name="SitButton" Content="Sit" Tag="sit" Click="Move_Click"/>
                 </UniformGrid>
                 <TextBlock Margin="0,16,0,0" Text="Microphone capture is never enabled by this app. Moving away from this window stops motion. STOP holds the last servo command; it does not remove power." Foreground="#92AAB4" TextWrapping="Wrap"/>
+                </StackPanel></TabItem>
+                <TabItem Header="Plan"><StackPanel Margin="12" TextElement.Foreground="#DFE8ED">
+                    <TextBlock Text="Saved poses &amp; motion plans" FontSize="22" Margin="0,0,0,10"/>
+                    <TextBlock Text="Capture commanded servo angles, draft a sequence, review the steps, then save. Arm motion explicitly before running. The robot does not auto-arm." TextWrapping="Wrap" Margin="0,0,0,12"/>
+                    <TextBlock x:Name="PlanStatusText" Text="No plan running" Foreground="#6DDFC2" TextWrapping="Wrap" Margin="0,0,0,10"/>
+                    <Button x:Name="RefreshPlansButton" Content="Refresh saved plans and poses" Click="RefreshPlans_Click"/>
+                    <TextBlock Text="Saved servo pose" Margin="0,12,0,4"/>
+                    <TextBox x:Name="PoseNameBox" Text="My pose" AutomationProperties.Name="Pose name"/>
+                    <Button x:Name="CapturePoseButton" Content="Save current servo positions" Click="CapturePose_Click"/>
+                    <ComboBox x:Name="PoseList" Margin="4" MinHeight="32" AutomationProperties.Name="Saved poses"/>
+                    <WrapPanel><Button x:Name="InsertPoseButton" Content="Append pose to plan" Click="InsertPose_Click"/><Button x:Name="DeletePoseButton" Content="Delete pose" Click="DeletePose_Click"/></WrapPanel>
+                    <TextBlock Text="Describe a plan" Margin="0,16,0,4"/>
+                    <TextBox x:Name="PlanPromptBox" Text="Stand. Move forward 4 steps, turn left, move forward four steps." AcceptsReturn="True" Height="65" TextWrapping="Wrap" AutomationProperties.Name="Plan instructions"/>
+                    <CheckBox x:Name="UsePlanLlmCheckBox" Content="Use configured LLM to draft" Foreground="#DFE8ED" Margin="4,8"/>
+                    <Button x:Name="DraftPlanButton" Content="Draft steps for review" Click="DraftPlan_Click"/>
+                    <TextBlock Text="Plan name" Margin="0,12,0,4"/>
+                    <TextBox x:Name="PlanNameBox" Text="My plan" AutomationProperties.Name="Plan name"/>
+                    <TextBlock Text="Editable steps (JSON): action, saved pose, or wait" Margin="0,10,0,4"/>
+                    <TextBox x:Name="PlanStepsBox" Text="[]" AcceptsReturn="True" Height="200" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" FontFamily="Consolas" AutomationProperties.Name="Editable plan steps"/>
+                    <WrapPanel><Button x:Name="SavePlanButton" Content="Save plan" Click="SavePlan_Click"/><Button x:Name="NewPlanButton" Content="New plan" Click="NewPlan_Click"/></WrapPanel>
+                    <TextBlock Text="Saved plans" Margin="0,12,0,4"/>
+                    <ComboBox x:Name="PlanList" Margin="4" MinHeight="32" SelectionChanged="PlanList_Changed" AutomationProperties.Name="Saved plans"/>
+                    <WrapPanel><Button x:Name="RunPlanButton" Content="Run selected plan" Click="RunPlan_Click"/><Button x:Name="StopPlanButton" Content="Stop plan &amp; disarm" Click="Stop_Click"/><Button x:Name="DeletePlanButton" Content="Delete plan" Click="DeletePlan_Click"/></WrapPanel>
+                </StackPanel></TabItem></TabControl>
                 <TextBlock x:Name="ErrorText" Foreground="#F39B9B" TextWrapping="Wrap" Margin="0,12,0,12"/>
             </StackPanel>
         </ScrollViewer>

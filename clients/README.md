@@ -2,7 +2,7 @@
 
 These first Android and Windows clients use the robot's existing **MCP server** for every control and status request. They display the camera through a native multipart JPEG decoder; they do not embed the web dashboard.
 
-Both provide a configurable robot URL, explicit arm/disarm, persistent STOP, one-cycle directional movement, stand/sit, measured battery voltage, forward ultrasonic range, and live video. They initialize MCP, poll `get_status` every second in the foreground, and honor busy/disarmed state. They never enable or capture microphone audio. Neither app implements the website's 3D view, calibration/testing catalog, or LLM administration yet; those remain available in the web interface.
+Both provide a configurable robot URL, explicit arm/disarm, persistent STOP, one-cycle directional movement, stand/sit, measured battery voltage, forward ultrasonic range, and live video. They initialize MCP, poll `get_status` every second in the foreground, and honor busy/disarmed state. They never enable or capture microphone audio. Both include a **Plan** tab for saved servo poses and motion sequences. The website's 3D view, calibration/testing catalog, and hardware/LLM administration remain in the web interface.
 
 ## Connect
 
@@ -16,6 +16,28 @@ A valid HTTPS certificate is required. There is no certificate-validation bypass
 Leaving the foreground or losing the connection sends a best-effort stop and requires **Connect** again. STOP is a software command that holds the last PWM command, not a power cutoff. The server's existing 15-second heartbeat timeout is a fallback; its heartbeat is shared, so another connected client can keep it alive. Do not rely on closing an app as a hardware emergency stop.
 
 Power display shows measured voltage. It does not invent charge percentage, charging state, or estimated runtime. Null/invalid readings are shown as unavailable. A responsive robot service establishes that the Pi is powered, not whether it is charging.
+
+## Plan tab
+
+The Plan tab uses the shared MCP plan library, so poses and plans saved from the website appear in both apps. Refresh the library after another interface edits it.
+
+1. Give a pose a name and choose **Save current servo positions** after the robot has a complete commanded pose. These are commanded angles; the servos have no position feedback.
+2. Describe a sequence, for example: “Stand. Move forward 4 steps, turn left, move forward four steps.” Choose **Draft steps for review**. The default uses the server’s bounded command parser; optionally select **Use configured LLM to draft** to use the Admin assistant provider. Drafting never executes movement.
+3. Review or edit the steps as JSON, name the plan, and save. The editor accepts action, saved-pose, and wait steps. Select a saved pose to append it to the draft.
+4. Select a saved plan, explicitly arm motion, then choose **Run selected plan**. Global **STOP** cancels the plan and disarms. Leaving the app/window retains the existing stop behavior.
+
+Example step array:
+
+```json
+[
+  {"type": "action", "name": "stand", "speed": 35, "steps": 1},
+  {"type": "action", "name": "forward", "speed": 35, "steps": 4},
+  {"type": "action", "name": "turn left", "speed": 35, "steps": 1},
+  {"type": "wait", "seconds": 1}
+]
+```
+
+The server validates and bounds every plan. Sensor conditions and autonomous decision steps are not executed by these initial clients.
 
 ## Download from the robot
 
