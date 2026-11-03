@@ -50,7 +50,7 @@ public sealed class McpClient : IDisposable
     private async Task<JsonObject> RpcAsync(string method, JsonObject parameters, CancellationToken cancellationToken, bool notification = false)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(TimeSpan.FromSeconds(8));
+        timeout.CancelAfter(TimeSpan.FromSeconds(method == "tools/call" && parameters["name"]?.GetValue<string>() == "plan_draft" ? 120 : 8));
         using var request = new HttpRequestMessage(HttpMethod.Post, BaseUrl + "/mcp");
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("text/event-stream"));

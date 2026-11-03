@@ -77,3 +77,97 @@ API references: [Ollama chat](https://docs.ollama.com/api/chat), [Ollama model d
 ## License
 
 Current PiBotPal code, including the replacement HAT driver, geometry, motion planner, and Testing tab, is **MIT licensed**; see `LICENSE`. SunFounder's original examples retain their own licenses and remain separate. Historical versions are not relicensed. Three.js retains its MIT notice. System libcamera and ALSA libraries are LGPL-2.1-or-later; this is not a claim that the operating system or every dependency is MIT. See [dependency inventory](DEPENDENCIES.md) and `NOTICE`.
+
+## Plan: saved poses and routines
+
+The web **Plan** tab and the Android/Windows **Plan** tabs share the same MCP
+library and runner. Save a named pose from twelve known, idle servo commands;
+these are commanded positions, not measurements of hand-positioned legs.
+Build, reorder, and edit movement, saved-pose, and wait steps. The native editors
+also expose the step JSON for direct editing. Saved plans snapshot pose angles,
+so later library edits/deletions do not silently change an existing plan.
+
+Describe a routine such as “Stand. Move forward 4 steps, turn left, move forward
+four steps.” The built-in parser handles this without an LLM. Optional **Use
+configured LLM** sends instructions and up to 32 saved pose names/IDs to the Admin assistant provider and receives a
+strictly validated draft without tool access. Review and save the draft, then
+explicitly arm and run. Drafting and saving never move the robot. The model does
+not arm or run its draft. Gait cycles do not imply calibrated meters or degrees.
+
+Execution reports current step/progress. Plans allow 64 entries, five gait
+cycles per movement entry, 30 seconds per wait, and a 300-second whole-run limit.
+Keep an operator interface connected: the existing 15-second heartbeat still
+applies. Plans disarm on completion, cancellation, timeout, or error; STOP,
+disarming, service shutdown, and the heartbeat watchdog cancel the plan. Manual
+motion/tests cannot compete with an active plan. Restarting never resumes one.
+Plans and poses persist locally in `plans.json` under the service data directory.
+
+MCP adds `plan_list`, `pose_save`, `pose_delete`, `plan_save`, `plan_delete`,
+`plan_draft`, `plan_run`, `plan_stop`, `hardware_get`, and `hardware_save`.
+Sensor conditions/branching are not implemented in this version; plans do not
+provide automatic obstacle avoidance. Unsupported conditional instructions are
+rejected by the simple parser rather than silently dropped.
+
+## Hardware inventory and expansion
+
+Admin now lists the HAT/servos, front camera, sonar, power telemetry, microphone,
+speaker, rear USB webcam, RPLIDAR C1, Coral USB, and an optional IMU. It shows
+passively discovered stable USB camera/serial paths, Coral IDs, and Pi memory.
+Settings are validated and atomically stored in `hardware.json`. These are
+inventory/provisioning preferences: saving does not activate a driver, change
+live servo wiring, or grant microphone consent. Pending drivers are marked.
+
+The supplied lidar is an **RPLIDAR C1 over USB serial**. Its default serial rate
+is **460800**, matching [SLAMTEC's C1 configuration](https://github.com/Slamtec/sllidar_ros2/blob/main/launch/sllidar_c1_launch.py).
+The [SLAMTEC SDK](https://github.com/Slamtec/rplidar_sdk) is BSD-2-Clause, compatible
+with the project's dependency preference. The next integration should emit
+bounded timestamped scans with mounting transforms and freshness/quality status,
+then draw a local obstacle map and expose compact clearance summaries to MCP.
+Begin with stationary scans: a crawler pitches and rolls, so mapping needs
+motion compensation or stop-and-scan operation. Add an IMU and localization
+confidence before treating gait commands as world-frame odometry. A 2D lidar
+does not itself provide SLAM, reliable travel distance, or drop-off detection.
+
+A rear UVC webcam should be a second independently named stream with a stable
+`/dev/v4l/by-id` path, independent health/fps controls, rear mounting transform,
+and front/rear selection in each client. It should share timestamps and camera
+processing with perception without enabling microphone capture or automatic
+cloud uploads. The current inventory prepares these options; a rear capture
+stream is not implemented yet.
+
+The Coral USB is useful for compatible compiled int8 TensorFlow Lite perception
+models, such as object detection. It is not a drop-in accelerator for llama.cpp
+text generation; see [Coral model requirements](https://coral.ai/docs/edgetpu/models-intro/).
+A separate perception worker should produce structured detections with source,
+timestamp, frame, and confidence. Avoid streaming unbounded images/scans into
+text-model context or putting inference in the servo/control thread.
+
+Future decision steps should use typed sensor predicates, freshness limits,
+explicit missing-data behavior, bounded retries, and a whole-plan deadline.
+A deterministic executor should check those conditions between small movement
+segments and stop on stale/invalid navigation data. LLMs can suggest plans or
+explain observations; the executor owns motion limits and failure handling.
+Plan schema version 1 deliberately supports only action/pose/wait. A future
+version can add guards while retaining readable/reviewable steps and logs.
+
+## Small models on this Pi
+
+This robot is a Raspberry Pi 5 with approximately 4 GB RAM. Start with a small
+four-bit model, a short context (around 2048 tokens), and bounded output. These
+are candidates to benchmark, not measured throughput or memory guarantees:
+
+| Candidate | Role | Model license |
+| --- | --- | --- |
+| [Qwen3-0.6B](https://huggingface.co/Qwen/Qwen3-0.6B) | First local candidate; disable thinking for short plan drafts | Apache-2.0 |
+| [Qwen2.5-0.5B-Instruct](https://huggingface.co/Qwen/Qwen2.5-0.5B-Instruct) | Small instruction/JSON drafting baseline | Apache-2.0 |
+| [SmolLM2-360M-Instruct](https://huggingface.co/HuggingFaceTB/SmolLM2-360M-Instruct) | Lowest-footprint simple language baseline; expect weaker planning | Apache-2.0 |
+
+Use [llama.cpp](https://github.com/ggml-org/llama.cpp) (MIT) with an explicitly
+licensed GGUF quantization and its OpenAI-compatible server bound to loopback.
+Configure that local `/v1` endpoint in Admin as an OpenAI-compatible provider.
+Start with two inference threads and monitor camera fps/control responsiveness,
+RSS, temperature, and power before raising limits. Raw four-bit weights for
+these sizes are only a lower bound: metadata, quantization scales, KV cache,
+and runtime buffers add memory. Models are not downloaded or installed by this
+change. Keep the existing remote Ollama Qwen server for stronger drafting while
+using the deterministic parser/executor offline for simple routines.

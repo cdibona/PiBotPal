@@ -38,6 +38,7 @@ class McpClient(address: String) {
 
     private fun rpc(method: String, params: JSONObject, notification: Boolean = false): JSONObject {
         val connection = open("/mcp")
+        if (method == "tools/call" && params.optString("name") == "plan_draft") connection.readTimeout = 120000
         try {
             connection.requestMethod = "POST"
             connection.doOutput = true
