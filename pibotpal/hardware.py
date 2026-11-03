@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Adapted from SunFounder PiCrawler; see NOTICE and LICENSES/GPL-3.0.txt.
 """Single-owner, interruptible PiCrawler controller.
 
 Neither start nor arm resets the MCU or commands servos. Servo construction is

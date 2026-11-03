@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Adapted from SunFounder PiCrawler; see NOTICE and LICENSES/GPL-3.0.txt.
 """PiCrawler link geometry, derived from the installed SunFounder IK model.
 
 Body coordinates: +x right, +y forward, +z up, millimetres. Servo ordering is

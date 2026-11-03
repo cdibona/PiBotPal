@@ -1,3 +1,5 @@
+# SPDX-License-Identifier: GPL-3.0-only
+# Adapted from SunFounder PiCrawler; see NOTICE and LICENSES/GPL-3.0.txt.
 """Bounded, cancellable adaptations of the installed PiCrawler teaching demos.
 
 No example is imported or launched: they create their own hardware owners and

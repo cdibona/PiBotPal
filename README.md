@@ -73,4 +73,4 @@ API references: [Ollama chat](https://docs.ollama.com/api/chat), [Ollama model d
 
 ## License
 
-GNU GPL v3; see `LICENSE` and `NOTICE`. Vendored Three.js retains its MIT license.
+Original PiBotPal application/UI, Admin, MCP/LLM integration, native clients, and documentation are **MIT licensed**; see `LICENSE`. Three vendor-derived hardware/example files retain GPL-3.0-only notices: `pibotpal/hardware.py`, `pibotpal/kinematics.py`, and `pibotpal/examples.py`. The separately installed SunFounder `picrawler` and `robot_hat` packages are GPLv3, and the combined hardware service remains subject to applicable GPL requirements. The native clients communicate over HTTP and do not include those Python packages. See `NOTICE` and `LICENSES/GPL-3.0.txt` for the exact boundary. This change does not claim that upstream code has been relicensed or that the entire hardware stack is GPL-free. Vendored Three.js retains its MIT license.

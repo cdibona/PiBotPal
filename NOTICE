@@ -1,10 +1,35 @@
-PiBotPal is distributed under GNU GPL version 3; see LICENSE.
+PiBotPal licensing
+=================
 
-PiCrawler teaching examples and kinematic conventions adapted from
-SunFounder PiCrawler (GPL-3.0): https://github.com/sunfounder/picrawler
-The gait planner is loaded from the separately installed vendor package.
-Hardware drivers are supplied by the separately installed robot-hat package.
+Original PiBotPal application, web UI, MCP/LLM integration, native Android and
+Windows clients, tests, and documentation are MIT licensed; see LICENSE.
+Copyright (c) 2026 Chris DiBona.
+
+Exceptions: the following hardware/example files were developed by adapting
+SunFounder's GPLv3 PiCrawler implementation and retain GPL-3.0-only licensing:
+
+  pibotpal/hardware.py
+  pibotpal/kinematics.py
+  pibotpal/examples.py
+
+These files carry explicit SPDX identifiers. See LICENSES/GPL-3.0.txt.
+Upstream attribution: SunFounder PiCrawler authors,
+https://github.com/sunfounder/picrawler
+
+The separately installed SunFounder picrawler and robot_hat packages are also
+GPLv3. PiBotPal loads the picrawler gait planner and imports robot_hat drivers
+into its hardware service. The MIT license on original PiBotPal contributions
+does not relicense those upstream packages or remove GPL requirements that
+apply when distributing the combined hardware service. This repository is
+not an entirely MIT-only/GPL-free hardware stack. Replacing the GPL components
+or obtaining alternative upstream licensing is separate work.
+
+The Android and Windows clients communicate over HTTP/MCP and do not bundle
+or import the SunFounder Python packages. Their original source is MIT;
+platform/runtime dependencies retain their own licenses.
 
 Three.js 0.170.0 and OrbitControls are vendored under the MIT license.
 Copyright 2010-2024 Three.js Authors. See
 pibotpal/static/vendor/THREE-LICENSE.txt.
+
+Other separately installed/runtime dependencies retain their upstream terms.

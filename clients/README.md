@@ -68,3 +68,7 @@ The Windows client saves its endpoint under `%LOCALAPPDATA%\PiBotPal\client.json
 - Responses accept both current `structuredContent` and older JSON text content. The server uses stateless JSON responses; the clients also accept a finite SSE result.
 
 Compatibility references: [AGP 8.7 requirements](https://developer.android.com/build/releases/agp-8-7-0-release-notes), [Kotlin Gradle compatibility](https://kotlinlang.org/docs/gradle-configure-project.html), [.NET 10 WPF](https://learn.microsoft.com/en-us/dotnet/desktop/wpf/whats-new/net100).
+
+## License
+
+Original Android and Windows client source is MIT licensed; see `clients/LICENSE`. These clients use HTTP/MCP and do not bundle the GPL SunFounder Python libraries used by the robot service. Platform and runtime dependencies retain their upstream licenses.
