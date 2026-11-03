@@ -5,12 +5,13 @@ A local PiCrawler hardware service, private Tailscale dashboard, and Streamable 
 ## Run on this Pi
 
 ```sh
+sudo apt install python3-libcamera python3-numpy python3-pil libasound2t64 libflite1
 python3 -m venv --system-site-packages .venv
 .venv/bin/pip install -r requirements.txt
 .venv/bin/python -m pibotpal
 ```
 
-Requires the installed SunFounder `picrawler` and `robot_hat` packages, Raspberry Pi OS `picamera2`, OpenCV, ALSA, FFmpeg, and eSpeak. System site packages preserve the Pi's native camera/GPIO drivers. No Node or runtime CDN is needed.
+Requires Raspberry Pi OS `python3-libcamera`, NumPy, Pillow, `libasound2t64`, and the Flite shared libraries (`libflite1`). Install Python requirements below; system site packages expose the Pi's camera bindings. PiBotPal controls the Robot HAT directly using MIT-licensed python-periphery. It does not import `picrawler`, `robot_hat`, Picamera2, OpenCV, or python-prctl, and does not invoke FFmpeg, eSpeak, arecord, or aplay. No Node or runtime CDN is needed. Optional QR decoding uses `zxing-cpp` (Apache-2.0), installed with `.venv/bin/pip install -r requirements-vision.txt`; it is installed on this robot. Face detection is currently unavailable.
 
 Install the persistent user service and Tailscale HTTPS proxy with `scripts/install-service.sh`. It starts at boot via user lingering, binds only `127.0.0.1:8765`, and restarts on failure. It starts disarmed and microphone-muted. The camera starts for monitoring. Tailnet access rules determine who can reach the robot; this service trusts connections from Tailscale Serve and local processes. Do not expose the backend publicly.
 
@@ -20,7 +21,7 @@ Install the persistent user service and Tailscale HTTPS proxy with `scripts/inst
 - Restart: `systemctl --user restart pibotpal`
 - Disable: `systemctl --user disable --now pibotpal`
 
-Configuration can be placed in `~/.config/pibotpal/environment`: `PIBOTPAL_HOST`, `PIBOTPAL_DATA`, `PICRAWLER_HOME`, `PIBOTPAL_MIC_DEVICE` (default `plughw:CARD=Device,DEV=0`), `PIBOTPAL_SPEAKER_DEVICE` (default `default`). Never commit secrets. Use `PIBOTPAL_SIMULATE=1` to develop without GPIO/motion; the UI labels simulated state and does not fabricate camera/range data.
+Configuration can be placed in `~/.config/pibotpal/environment`: `PIBOTPAL_HOST`, `PIBOTPAL_DATA`, `PIBOTPAL_MIC_DEVICE` (default `plughw:CARD=Device,DEV=0`), `PIBOTPAL_SPEAKER_DEVICE` (default `default`). Never commit secrets. Use `PIBOTPAL_SIMULATE=1` to develop without GPIO/motion; the UI labels simulated state and does not fabricate camera/range data.
 
 ## Control contract
 
@@ -34,13 +35,15 @@ Camera frames and audio use separate media URLs for efficient streaming; their c
 
 ## Geometry and limits
 
-The 3D view uses commanded logical servo angles and forward kinematics from the vendor geometry: 33 mm coxa, 48 mm upper link, 78 mm lower link, 77 mm hip spacing. It shows the model's joints rather than pretending it is a CAD scan. Decorative chassis, camera, and sensor placement are approximate. Servo calibration and direction are reported separately. These PWM servos have no position feedback: a stalled or manually displaced limb will differ from the model. There is no identified IMU, so world roll/pitch/yaw are unavailable. Dragging rotates the **view**, not the robot.
+The replacement crawl and gesture trajectories have been validated in simulation, but still need physical balance and travel checks on the assembled bot.
+
+The 3D view uses commanded logical servo angles and its own forward kinematics using assembly dimensions: 33 mm coxa, 48 mm upper link, 78 mm lower link, 77 mm hip spacing. It shows the model's joints rather than pretending it is a CAD scan. Decorative chassis, camera, and sensor placement are approximate. Servo calibration and direction are reported separately. These PWM servos have no position feedback: a stalled or manually displaced limb will differ from the model. There is no identified IMU, so world roll/pitch/yaw are unavailable. Dragging rotates the **view**, not the robot.
 
 Ultrasonic telemetry is a single forward range measurement, drawn as a return/range cone; it is not a 3D map or scanning lidar. Invalid readings are shown as unavailable, with raw return diagnostics. An echo timeout on D2/D3 means no valid pulse was captured: check sensor power, trigger/echo connections, and a solid target in front of it. The sensor is not treated as clear space when a reading fails.
 
 ## Testing and example coverage
 
-The Testing tab lists each local vendor example, its parameters, and dependency limitations. Tests are bounded and cancellable. The language-model test uses the default testing provider configured in Admin. STT and voice-to-action adapters remain unavailable; adding an LLM provider does not implement speech recognition or enable microphone capture. They never silently activate the microphone or upload audio. Calibration changes require deliberate test controls; vendor scripts are not executed directly.
+The Testing tab maps each local vendor example to an independent bounded exercise, its parameters, and dependency limitations. Original vendor programs and their licenses are preserved separately; see [reference notes](references/README.md). Tests are bounded and cancellable. The language-model test uses the default testing provider configured in Admin. STT and voice-to-action adapters remain unavailable; adding an LLM provider does not implement speech recognition or enable microphone capture. They never silently activate the microphone or upload audio. Calibration changes require deliberate test controls; vendor scripts are not executed directly.
 
 ```sh
 .venv/bin/pip install -r requirements-dev.txt
@@ -73,4 +76,4 @@ API references: [Ollama chat](https://docs.ollama.com/api/chat), [Ollama model d
 
 ## License
 
-Original PiBotPal application/UI, Admin, MCP/LLM integration, native clients, and documentation are **MIT licensed**; see `LICENSE`. Three vendor-derived hardware/example files retain GPL-3.0-only notices: `pibotpal/hardware.py`, `pibotpal/kinematics.py`, and `pibotpal/examples.py`. The separately installed SunFounder `picrawler` and `robot_hat` packages are GPLv3, and the combined hardware service remains subject to applicable GPL requirements. The native clients communicate over HTTP and do not include those Python packages. See `NOTICE` and `LICENSES/GPL-3.0.txt` for the exact boundary. This change does not claim that upstream code has been relicensed or that the entire hardware stack is GPL-free. Vendored Three.js retains its MIT license.
+Current PiBotPal code, including the replacement HAT driver, geometry, motion planner, and Testing tab, is **MIT licensed**; see `LICENSE`. SunFounder's original examples retain their own licenses and remain separate. Historical versions are not relicensed. Three.js retains its MIT notice. System libcamera and ALSA libraries are LGPL-2.1-or-later; this is not a claim that the operating system or every dependency is MIT. See [dependency inventory](DEPENDENCIES.md) and `NOTICE`.

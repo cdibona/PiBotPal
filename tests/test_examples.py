@@ -164,6 +164,23 @@ class ExampleTests(unittest.TestCase):
         self.assertEqual(self.finish()["result"], {"played": 1})
         self.assertEqual(self.controller.calls[0][0], "pose")
 
+    def test_custom_step_lifts_only_selected_foot(self):
+        self.controller.state["armed"] = True
+        self.runner.run("9_do_step")
+        self.assertEqual(self.finish()["phase"], "complete")
+        poses = [call[1] for call in self.controller.calls if call[0] == "pose"]
+        self.assertEqual(len(poses), 1)
+        self.assertEqual([foot[2] for foot in poses[0]], [-50, -50, -40, -50])
+        self.assertEqual(self.controller.calls[0], ("action", "ready"))
+        self.assertEqual(self.controller.calls[-1], ("action", "stand"))
+
+    def test_face_detection_reports_unavailable(self):
+        self.runner.run("5_display", {"mode": "face"})
+        state = self.finish()
+        self.assertEqual(state["phase"], "failed")
+        self.assertIn("Face detection is unavailable", state["error"])
+        self.assertEqual(self.controller.calls, [])
+
     def test_generated_custom_gestures_stay_in_workspace(self):
         self.controller.state["armed"] = True
         for identity, options in (("12_twist", {}), ("13_emotional_robot", {"emotion": "swimming"}), ("14_preset_actions", {"action": "excited"})):

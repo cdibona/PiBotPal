@@ -3,7 +3,8 @@ import time
 
 import pytest
 
-from pibotpal.hardware import ACTIONS, CheckedPwmWrites, Controller, _vendor_moves
+from pibotpal.hardware import ACTIONS, Controller
+from pibotpal.motion import MotionPlan
 from pibotpal.kinematics import A, B, C, DIRECTIONS, inverse, leg_geometry, local_joints
 
 
@@ -155,8 +156,8 @@ def test_error_disarms_controller(tmp_path):
         c.close()
 
 
-def test_vendor_gaits_load_without_constructing_robot():
-    moves = _vendor_moves()
+def test_motion_plans_load_without_constructing_robot():
+    moves = MotionPlan()
     assert len(moves.forward) > 1
     assert len(moves.wave) > 1
 
@@ -175,8 +176,8 @@ def test_invalid_calibration_cannot_arm(tmp_path):
         c.close()
 
 
-def test_all_vendor_action_coordinates_are_supported():
-    moves = _vendor_moves()
+def test_all_action_coordinates_are_supported():
+    moves = MotionPlan()
     for name in ACTIONS:
         for pose in getattr(moves, name.replace(' ', '_')):
             for coord in pose:
@@ -184,29 +185,12 @@ def test_all_vendor_action_coordinates_are_supported():
                 assert all(math.isfinite(a) for a in angles)
 
 
-def test_checked_pwm_preserves_vendor_byte_order_and_rejects_exhausted_retry():
-    calls = []
-    class Adapter(CheckedPwmWrites):
-        result = None
-        def _write_word_data(self, reg, value):
-            calls.append((reg, value))
-            return self.result
-    adapter = Adapter()
-    adapter._i2c_write(0x23, 0x1234)
-    assert calls == [(0x23, 0x3412)]
-    adapter.result = False
-    with pytest.raises(OSError, match='I2C write failed'):
-        adapter._i2c_write(0x23, 0x1234)
-
-
 def test_exhausted_i2c_retry_does_not_report_new_angles(tmp_path):
-    class ServoWithFailedWrite(CheckedPwmWrites):
+    class ServoWithFailedWrite:
         def __init__(self, channel):
             pass
-        def _write_word_data(self, register, value):
-            return False
         def angle(self, angle):
-            self._i2c_write(0x20, 300)
+            raise OSError("I2C write failed")
     c = Controller(simulate=True, servo_factory=ServoWithFailedWrite, config_path=tmp_path/'calibration')
     try:
         c.start()

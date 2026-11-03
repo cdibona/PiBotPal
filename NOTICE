@@ -1,35 +1,23 @@
 PiBotPal licensing
 =================
 
-Original PiBotPal application, web UI, MCP/LLM integration, native Android and
-Windows clients, tests, and documentation are MIT licensed; see LICENSE.
-Copyright (c) 2026 Chris DiBona.
+Current PiBotPal application, hardware transport, motion/geometry, Testing tab,
+web UI, MCP/LLM integration, native clients, tests and documentation are MIT
+licensed; see LICENSE. Copyright (c) 2026 Chris DiBona.
 
-Exceptions: the following hardware/example files were developed by adapting
-SunFounder's GPLv3 PiCrawler implementation and retain GPL-3.0-only licensing:
+The direct Robot HAT implementation uses hardware register/wiring facts and
+python-periphery (MIT), without importing SunFounder picrawler/robot_hat code.
+The motion planner and teaching exercises are new implementations. SunFounder's
+original GPLv3 programs remain separate and unchanged in ~/picrawler; see
+references/README.md. Prior PiBotPal versions in Git history retain their
+original notices; LICENSES/GPL-3.0.txt is retained for historical reference.
+No upstream GPL code is being relicensed.
 
-  pibotpal/hardware.py
-  pibotpal/kinematics.py
-  pibotpal/examples.py
-
-These files carry explicit SPDX identifiers. See LICENSES/GPL-3.0.txt.
-Upstream attribution: SunFounder PiCrawler authors,
-https://github.com/sunfounder/picrawler
-
-The separately installed SunFounder picrawler and robot_hat packages are also
-GPLv3. PiBotPal loads the picrawler gait planner and imports robot_hat drivers
-into its hardware service. The MIT license on original PiBotPal contributions
-does not relicense those upstream packages or remove GPL requirements that
-apply when distributing the combined hardware service. This repository is
-not an entirely MIT-only/GPL-free hardware stack. Replacing the GPL components
-or obtaining alternative upstream licensing is separate work.
-
-The Android and Windows clients communicate over HTTP/MCP and do not bundle
-or import the SunFounder Python packages. Their original source is MIT;
-platform/runtime dependencies retain their own licenses.
-
-Three.js 0.170.0 and OrbitControls are vendored under the MIT license.
-Copyright 2010-2024 Three.js Authors. See
+Three.js 0.170.0 and OrbitControls retain the MIT license and attribution in
 pibotpal/static/vendor/THREE-LICENSE.txt.
 
-Other separately installed/runtime dependencies retain their upstream terms.
+Runtime dependencies retain their own licenses. In particular the system
+libcamera library/Python bindings and libasound are LGPL-2.1-or-later, NOT MIT.
+Flite and its built-in CMU voice retain their permissive CMU terms. Python,
+NumPy, Pillow, and the web/MCP libraries retain their respective terms.
+See DEPENDENCIES.md for the application boundary and remaining system libraries.

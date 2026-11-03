@@ -1,5 +1,4 @@
-# SPDX-License-Identifier: GPL-3.0-only
-# Adapted from SunFounder PiCrawler; see NOTICE and LICENSES/GPL-3.0.txt.
+# SPDX-License-Identifier: MIT
 """Single-owner, interruptible PiCrawler controller.
 
 Neither start nor arm resets the MCU or commands servos. Servo construction is
@@ -10,7 +9,6 @@ from __future__ import annotations
 
 import ast
 import fcntl
-import importlib.util
 import math
 import os
 from pathlib import Path
@@ -25,48 +23,16 @@ ACTIONS = ('stand', 'sit', 'ready', 'forward', 'backward', 'turn left', 'turn ri
            'look right', 'look up', 'look down', 'dance')
 
 
-class CheckedPwmWrites:
-    """Keep robot_hat's retry policy, but make exhausted writes observable.
-
-    PWM._i2c_write sends a 16-bit value high byte first. SMBus word writes
-    send low byte first, hence the byte swap. The upstream I2C.write drops
-    its helper's False result; overriding here prevents false pose telemetry.
-    """
-    def _i2c_write(self, register, value):
-        swapped = ((value & 0xff) << 8) | ((value >> 8) & 0xff)
-        if self._write_word_data(register, swapped) is False:
-            raise OSError(f'Robot HAT I2C write failed at register 0x{register:02x}')
-
-
 class MotionCancelled(Exception):
     pass
-
-
-def _vendor_moves():
-    """Load only the vendor's pure MoveList class, without importing GPIO/audio.
-
-    This keeps simulation hardware independent. The file is a trusted installed
-    dependency, never user-supplied request data; motion names are allowlisted.
-    """
-    source = Path(os.environ.get('PICRAWLER_HOME', os.environ.get('PIBOTPAL_PICRAWLER', str(Path.home() / 'picrawler')))) / 'picrawler' / 'picrawler.py'
-    if not source.is_file():
-        spec = importlib.util.find_spec('picrawler')
-        if spec is None or not spec.submodule_search_locations:
-            raise RuntimeError('SunFounder picrawler package/source is unavailable')
-        source = Path(next(iter(spec.submodule_search_locations))) / 'picrawler.py'
-    tree = ast.parse(source.read_text())
-    outer = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'Picrawler')
-    cls = next(n for n in outer.body if isinstance(n, ast.ClassDef) and n.name == 'MoveList')
-    namespace = {'math': math}
-    exec(compile(ast.fix_missing_locations(ast.Module(body=[cls], type_ignores=[])), str(source), 'exec'), namespace)
-    return namespace['MoveList']()
 
 
 class Controller:
     def __init__(self, simulate=None, *, servo_factory=None, sonar_factory=None, config_path=None, moves_factory=None):
         self.simulate = os.getenv('PIBOTPAL_SIMULATE', '0') == '1' if simulate is None else bool(simulate)
         self._servo_factory, self._sonar_factory = servo_factory, sonar_factory
-        self._moves_factory = moves_factory or _vendor_moves
+        from .motion import MotionPlan
+        self._moves_factory = moves_factory or MotionPlan
         self._config = Path(config_path or Path.home() / '.config/.picrawler.config')
         self._lock = threading.RLock()
         self._io_lock = threading.RLock()
@@ -75,6 +41,7 @@ class Controller:
         self._worker = self._sensor = None
         self._ownership = None
         self._servos, self._sonar, self._moves = [], None, None
+        self._hat = None
         self._armed = self._busy = self._estop = False
         self._action = self._action_error = None
         self._angles = [None] * 12
@@ -140,6 +107,12 @@ class Controller:
                 self._sonar.close()
             except Exception:
                 pass
+        if self._hat:
+            try:
+                self._hat.close()
+            except Exception as exc:
+                self._error(f'HAT close failed: {exc}')
+            self._hat = None
         if self._ownership:
             self._ownership.close()
             self._ownership = None
@@ -192,7 +165,7 @@ class Controller:
                 'pose_source': 'commanded' if all(a is not None for a in angles) else 'unknown',
                 'errors': list(self._errors), 'uptime_s': round(time.monotonic()-self._started, 1),
                 'geometry': {'upper_mm': 48, 'lower_mm': 78, 'coxa_mm': 33, 'body_side_mm': 77,
-                             'axes': 'x right, y forward, z up', 'body_dimensions_source': 'vendor gait model; not surveyed CAD'},
+                             'axes': 'x right, y forward, z up', 'body_dimensions_source': 'nominal linkage dimensions; not surveyed CAD'},
                 'stop_behavior': 'Cancel motion and hold last PWM command; power remains on',
             }
 
@@ -226,10 +199,11 @@ class Controller:
                 self._moves = self._moves_factory()
             for _ in range(steps):
                 self._check_cancel()
-                # getattr avoids the vendor dict implementation's eval.
                 poses = getattr(self._moves, name.replace(' ', '_'))
+                from .motion import validate_plan
+                validate_plan(poses)
                 for pose in poses:
-                    self._move(self._pose_angles(pose, strict=False), speed)
+                    self._move(self._pose_angles(pose), speed)
                 if name in ('forward', 'backward', 'turn left', 'turn right', 'turn left angle', 'turn right angle'):
                     self._moves.stand_position = (self._moves.stand_position + 1) & 1
         return self._submit(name, perform)
@@ -309,14 +283,18 @@ class Controller:
         if self._cancel.is_set() or self._closed.is_set():
             raise MotionCancelled()
 
+    def _get_hat(self):
+        with self._io_lock:
+            if self._hat is None:
+                from .hat import Hat
+                self._hat = Hat()
+            return self._hat
+
     def _ensure_servos(self):
         if len(self._servos) == 12 or (self.simulate and self._servo_factory is None):
             return
         if self._servo_factory is None:
-            from robot_hat import Servo
-            class CheckedServo(CheckedPwmWrites, Servo):
-                pass
-            factory = CheckedServo
+            factory = self._get_hat().servo
         else:
             factory = self._servo_factory
         for channel in CHANNELS[len(self._servos):]:
@@ -330,8 +308,7 @@ class Controller:
             self._check_cancel()
             for i, target in enumerate(angles):
                 self._check_cancel()
-                # Vendor Servo.angle clamps raw PWM angles. Record that actual
-                # commanded value instead of reporting an unreachable target.
+                # Record the calibrated command after applying the physical range.
                 raw = max(-90, min(90, DIRECTIONS[i] * (target + self._offsets[i])))
                 if self._servos:
                     self._servos[i].angle(raw)
@@ -391,12 +368,14 @@ class Controller:
             if self._sonar_factory:
                 self._sonar = self._sonar_factory()
             else:
-                from robot_hat import Pin, Ultrasonic
-                self._sonar = Ultrasonic(Pin('D2'), Pin('D3'), timeout=0.025)
-            from robot_hat.device import get_battery_voltage
-            battery = get_battery_voltage
+                from .hat import Sonar
+                self._sonar = Sonar(timeout=0.025)
         except Exception as exc:
             self._error(f'Sensor setup failed: {exc}')
+        try:
+            battery = self._get_hat().battery_voltage
+        except Exception as exc:
+            self._error(f'Battery setup failed: {exc}')
         cycle = 0
         while not self._closed.is_set():
             if self._sonar:

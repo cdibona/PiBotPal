@@ -1,9 +1,9 @@
-# SPDX-License-Identifier: GPL-3.0-only
-# Adapted from SunFounder PiCrawler; see NOTICE and LICENSES/GPL-3.0.txt.
-"""Bounded, cancellable adaptations of the installed PiCrawler teaching demos.
+# SPDX-License-Identifier: MIT
+"""Independent bounded hardware exercises mapped to SunFounder example topics.
 
-No example is imported or launched: they create their own hardware owners and
-many loop forever. These adaptations use the one application controller instead.
+Original upstream examples remain separately licensed reference material. This
+runner imports only PiBotPal interfaces; it never imports or executes examples.
+Movement routines use PiBotPal's original small trajectories and public actions.
 """
 from __future__ import annotations
 
@@ -14,6 +14,8 @@ import os
 from pathlib import Path
 import threading
 import time
+
+from .motion import MotionPlan, stance
 
 
 def choice(*values, default=None, description=""):
@@ -41,22 +43,22 @@ def entry(source, title, description, requires=(), unavailable=None, **parameter
 
 
 CATALOG = [
-    entry("0_calibration.py", "Calibration", "Arm only to enter the calibration pose. Read or save twelve offsets while disarmed; saving does not move the legs.", ("motion_optional",),
+    entry("0_calibration.py", "Calibration", "Arm only to enter the centered ready pose. Read or save twelve offsets while disarmed; saving does not move the legs.", ("motion_optional",),
           operation=choice("pose", "read_offsets", "save_offsets"), offsets={"type": "array", "items": {"type": "number", "minimum": -20, "maximum": 20}, "minItems": 12, "maxItems": 12}),
     entry("1_move.py", "Movement", "One selected gait, with a bounded number of cycles.", ("motion",), action=choice(*MOVES), speed=SPEED, steps=number(1, 1, 3, integer=True)),
     entry("2_keyboard_control.py", "Keyboard control", "Execute one keyboard command; the dashboard also provides directional controls.", ("motion",), key=choice("w", "a", "s", "d", "space"), speed=SPEED),
-    entry("3_sound_effect.py", "Sound effects", "Play one installed effect through the robot speaker.", ("speaker",), sound=choice(*SOUNDS)),
+    entry("3_sound_effect.py", "Sound effects", "Play one synthesized PiBotPal effect through the robot speaker.", ("speaker",), sound=choice(*SOUNDS)),
     entry("4_avoid.py", "Obstacle avoidance", "Bounded sonar navigation: turn below the threshold, otherwise advance. Invalid or stale ranging stops the run.", ("motion", "ultrasonic"), seconds=SECONDS, threshold_cm=number(30, 15, 100), speed=SPEED),
-    entry("5_display.py", "Camera and vision", "Enable the video feed and inspect a frame, color target, face, or QR code.", ("camera",), mode=choice("display", "snapshot", "color", "face", "qr"), color=choice(*COLORS)),
+    entry("5_display.py", "Camera and vision", "Enable video and inspect a frame, color target, or QR code. QR decoding requires optional zxing-cpp; face detection is currently unavailable.", ("camera",), mode=choice("display", "snapshot", "color", "face", "qr"), color=choice(*COLORS)),
     entry("6_record_video.py", "Record video", "Save a bounded silent camera recording on this Pi.", ("camera",), seconds=SECONDS),
     entry("7_bull_fight.py", "Red target tracking", "Bounded red-target pursuit. Turn toward red, advance only with clear valid sonar; hold when the target is lost.", ("motion", "camera", "ultrasonic"), seconds=SECONDS, speed=SPEED),
     entry("8_treasure_hunt.py", "Treasure hunt", "Find a selected color for up to 30 seconds. Use dashboard movement controls to search; this test never moves automatically.", ("camera",), color=choice(*COLORS), seconds=SECONDS),
     entry("9_do_step.py", "Custom step", "Stand, lift the left rear foot, then return to stand once.", ("motion",), speed=SPEED),
-    entry("10_do_single_leg.py", "Single leg", "Move one foot in the vendor leg-local coordinate system, in millimeters.", ("motion",), leg=number(0, 0, 3, "0 right front, 1 left front, 2 left rear, 3 right rear", True), x=number(50, 0, 120), y=number(45, 0, 120), z=number(-40, -90, 30), speed=SPEED),
+    entry("10_do_single_leg.py", "Single leg", "Move one foot in leg-local coordinates, in millimeters.", ("motion",), leg=number(0, 0, 3, "0 right front, 1 left front, 2 left rear, 3 right rear", True), x=number(50, 0, 120), y=number(45, 0, 120), z=number(-40, -90, 30), speed=SPEED),
     entry("11_record_new_step.py", "Record new steps", "Capture commanded joint angles and foot positions, replay up to 20 saved poses, or clear the saved sequence. Arm only to play. Stored locally across restarts.", ("motion_optional",), operation=choice("capture", "play", "clear"), speed=SPEED),
-    entry("12_twist.py", "Twist", "One small body-sway cycle. Amplitude is reduced from the teaching example to stay within the joint limits.", ("motion",), speed=SPEED),
+    entry("12_twist.py", "Twist", "One original small body-sway cycle using PiBotPal trajectories.", ("motion",), speed=SPEED),
     entry("13_emotional_robot.py", "Emotional robot", "One bounded expressive routine using the shared movement controller.", ("motion",), emotion=choice("handwork", "twist", "pushup", "swimming"), speed=SPEED),
-    entry("14_preset_actions.py", "Preset actions", "Bounded adaptations of the preset gestures, with reduced travel. Play-dead lowers into a resting pose rather than attempting a rollover.", ("motion",), action=choice(*PRESETS), speed=SPEED),
+    entry("14_preset_actions.py", "Preset actions", "Original small gestures selected by familiar example names. Play-dead uses the resting pose.", ("motion",), action=choice(*PRESETS), speed=SPEED),
     entry("15_stt.py", "Speech to text", "Recognize speech from the robot microphone.", ("microphone", "speech model"), unavailable="A bounded local speech recognizer and language model have not been configured. Microphone stays muted."),
     entry("16_tts.py", "Text to speech", "Speak text once through the robot speaker using the installed local speech engine.", ("speaker",), text={"type": "string", "default": "Hello! I am PiBotPal.", "maxLength": 500}),
     entry("17_online_llm_test.py", "Online language model", "Test a configured remote language model.", ("provider credentials",), unavailable="No language-model provider is configured for this server. This test does not send data to a cloud service."),
@@ -253,7 +255,7 @@ class ExampleRunner:
         speed = o.get("speed", 35)
         if identity == "0_calibration":
             if o["operation"] == "pose":
-                self._pose([[60, 0, -30] for _ in range(4)], speed)
+                self._action("ready", speed)
             elif o["operation"] == "save_offsets":
                 if "offsets" not in o:
                     raise ValueError("Provide all twelve offsets to save")
@@ -277,19 +279,23 @@ class ExampleRunner:
             self._pause(.5)
             if o["mode"] == "color":
                 return self.media.detect_color(o["color"])
-            import cv2
+            if o["mode"] == "face":
+                raise RuntimeError("Face detection is unavailable: no permissively licensed detector is configured")
+            try:
+                import zxingcpp
+            except ImportError as exc:
+                raise RuntimeError("QR decoding requires the optional Apache-2.0 zxing-cpp package") from exc
             frame = self.media.get_frame()
             if frame is None:
                 raise RuntimeError("Camera has no current frame")
-            if o["mode"] == "qr":
-                text, points, _ = cv2.QRCodeDetector().detectAndDecode(frame)
-                return {"detected": bool(text), "text": text, "points": None if points is None else points.tolist()}
-            cascade_dir = getattr(getattr(cv2, "data", None), "haarcascades", "/usr/share/opencv4/haarcascades")
-            classifier = cv2.CascadeClassifier(str(Path(cascade_dir) / "haarcascade_frontalface_default.xml"))
-            if classifier.empty():
-                raise RuntimeError("OpenCV face detector data is not installed")
-            faces = classifier.detectMultiScale(cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY), minSize=(30, 30))
-            return {"faces": [list(map(int, box)) for box in faces]}
+            # get_frame uses BGR memory ordering; ZXing expects RGB.
+            found = zxingcpp.read_barcodes(frame[:, :, ::-1].copy(), formats=zxingcpp.BarcodeFormat.QRCode)
+            codes = [{"text": code.text, "points": [[point.x, point.y] for point in
+                      (code.position.top_left, code.position.top_right,
+                       code.position.bottom_right, code.position.bottom_left)]}
+                     for code in found if code.valid]
+            return {"detected": bool(codes), "text": codes[0]["text"] if codes else "",
+                    "points": codes[0]["points"] if codes else None, "codes": codes}
         elif identity == "6_record_video":
             self.media.camera(True)
             return self.media.record(o["seconds"])
@@ -327,9 +333,11 @@ class ExampleRunner:
                 self._pause(.2)
             return {"found": False, "color": o["color"]}
         elif identity == "9_do_step":
-            self._action("stand", speed)
-            self._pose([[45, 45, -50], [45, 0, -50], [45, 0, -30], [45, 45, -50]], speed)
-            self._pause(.4)
+            self._action("ready", speed)
+            raised = stance()
+            raised[2][2] += 10
+            self._pose(raised, speed)
+            self._pause(.3)
             self._action("stand", speed)
         elif identity == "10_do_single_leg":
             self._motion("set_leg", o["leg"], o["x"], o["y"], o["z"], speed=speed)
@@ -347,9 +355,10 @@ class ExampleRunner:
             elif emotion == "pushup":
                 self._preset("push_up", speed)
             else:
-                for phase in range(12):
-                    angle = phase * math.tau / 12
-                    self._pose([[50 + 8 * math.cos(angle + i * math.pi), 40 + 8 * math.sin(angle + i * math.pi), -45] for i in range(4)], speed)
+                # A small alternating gesture replaces the teaching swim loop.
+                self._action("look left", speed)
+                self._action("wave", speed)
+                self._action("look right", speed)
                 self._action("stand", speed)
         elif identity == "14_preset_actions":
             self._preset(o["action"], speed)
@@ -363,47 +372,25 @@ class ExampleRunner:
 
     def _twist(self, speed):
         self._update(phase="body sway")
-        for phase in range(13):
-            angle = phase * math.tau / 12
-            self._pose([[50, 40, -45 + 10 * math.sin(angle + i * math.pi / 2)] for i in range(4)], speed)
-        self._action("stand", speed)
+        for pose in MotionPlan().dance:
+            self._pose(pose, speed)
 
     def _preset(self, name, speed):
-        if name in ("sit", "stand"):
-            self._action(name, speed)
-            return
-        if name in ("wave_hand", "shake_hand"):
-            self._action("wave", speed)
-            return
-        if name in ("look_up", "look_down", "look_left", "look_right"):
-            self._action(name.replace("_", " "), speed)
-            return
-        if name == "push_up":
-            self._action("push up", speed)
-            return
-        if name == "play_dead":
-            self._action("sit", speed)
-            return
-        if name in ("dance", "warm_up"):
-            self._twist(speed)
-            return
-        if name == "nod":
-            for _ in range(2):
-                self._action("look up", speed)
-                self._action("look down", speed)
-        elif name == "shake_head":
-            for _ in range(2):
-                self._action("look left", speed)
-                self._action("look right", speed)
-        elif name == "excited":
-            for _ in range(2):
-                self._pose([[50, 40, -35] for _ in range(4)], speed)
-                self._pose([[50, 40, -60] for _ in range(4)], speed)
-        elif name == "fighting":
-            self._action("look left", speed)
-            self._action("look right", speed)
-            self._action("wave", speed)
-        self._action("stand", speed)
+        # These are independent compositions of the public, bounded primitives.
+        routines = {
+            "sit": ("sit",), "stand": ("stand",),
+            "wave_hand": ("wave",), "shake_hand": ("wave", "ready"),
+            "look_up": ("look up",), "look_down": ("look down",),
+            "look_left": ("look left",), "look_right": ("look right",),
+            "push_up": ("push up",), "play_dead": ("sit",),
+            "dance": ("dance",), "warm_up": ("ready", "dance"),
+            "nod": ("look down", "look up", "stand"),
+            "shake_head": ("look right", "look left", "stand"),
+            "excited": ("push up", "wave", "stand"),
+            "fighting": ("ready", "wave", "stand"),
+        }
+        for action in routines[name]:
+            self._action(action, speed)
 
     def _record_steps(self, operation, speed):
         path = self.data_dir / "saved_steps.json"

@@ -1,0 +1,2 @@
+# Optional Apache-2.0 QR decoder; no face model is bundled.
+zxing-cpp==3.0.0

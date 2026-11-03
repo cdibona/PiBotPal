@@ -1,14 +1,16 @@
+# SPDX-License-Identifier: MIT
 """Shared camera and explicitly enabled audio. No microphone opens at startup."""
 from __future__ import annotations
 import io
+import math
 import os
 from pathlib import Path
-import shutil
 import struct
-import subprocess
 import threading
 import time
 from datetime import datetime, timezone
+from . import audio
+from .avi import MjpegAVI
 
 
 class Media:
@@ -28,7 +30,9 @@ class Media:
         self._mic_enabled = False
         self._mic_error = None
         self._mic_processes = set()
-        self._audio_processes = []
+        self._audio_thread = None
+        self._audio_stop = threading.Event()
+        self._output_pcm = None
         self._speaker_error = None
         self._record_stop = threading.Event()
         self._record_thread = None
@@ -52,10 +56,10 @@ class Media:
                            'available': self._jpeg is not None, 'error': self._camera_error,
                            'timestamp': self._frame_time, 'width': 640, 'height': 480},
                 'microphone': {'enabled': self._mic_enabled, 'muted': not self._mic_enabled,
-                               'available': shutil.which('arecord') is not None and not self.simulate,
+                               'available': audio.available() and not self.simulate,
                                'error': self._mic_error, 'listeners': len(self._mic_processes)},
-                'speaker': {'available': shutil.which('aplay') is not None and not self.simulate,
-                            'busy': any(p.poll() is None for p in self._audio_processes), 'error': self._speaker_error},
+                'speaker': {'available': audio.available() and not self.simulate,
+                            'busy': bool(self._audio_thread and self._audio_thread.is_alive()), 'error': self._speaker_error},
                 'recording': {'active': bool(self._record_thread and self._record_thread.is_alive()),
                               'error': self._record_error},
                 'recordings': [{'name': p.name, 'url': '/recordings/' + p.name, 'bytes': p.stat().st_size} for p in recent],
@@ -82,19 +86,19 @@ class Media:
     def _capture(self):
         cam = None
         try:
-            import cv2
-            from picamera2 import Picamera2
+            from PIL import Image
+            from .camera import Camera as Picamera2
             cam = Picamera2()
             cam.configure(cam.create_video_configuration(main={'size': (640, 480), 'format': 'RGB888'},
                                                           controls={'FrameRate': 12}))
             cam.start()
             while not self._camera_stop.is_set():
-                # Picamera2 RGB888 memory order is BGR, directly usable by OpenCV.
+                # Preserve BGR frame API; Pillow explicitly receives RGB bytes.
                 frame = cam.capture_array('main')
-                ok, encoded = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 78])
-                if ok:
-                    self._frame, self._jpeg = frame, encoded.tobytes()
-                    self._frame_time = time.time()
+                encoded = io.BytesIO()
+                Image.fromarray(frame[:, :, ::-1]).save(encoded, format='JPEG', quality=78)
+                self._frame, self._jpeg = frame, encoded.getvalue()
+                self._frame_time = time.time()
         except Exception as exc:
             self._camera_error = str(exc)
         finally:
@@ -116,28 +120,55 @@ class Media:
         return self._frame.copy()
 
     def detect_color(self, color='red'):
-        import cv2
+        from PIL import Image
         import numpy as np
-        bounds = {'red': [(0, 10), (170, 180)], 'blue': [(95, 130)], 'green': [(35, 85)],
-                  'yellow': [(20, 35)], 'orange': [(10, 20)], 'purple': [(130, 165)]}
+        bounds = {'red': [(0, 14), (241, 255)], 'blue': [(135, 185)], 'green': [(50, 121)],
+                  'yellow': [(28, 50)], 'orange': [(14, 28)], 'purple': [(185, 234)]}
         if color not in bounds:
             raise ValueError('Unknown color')
         frame = self.get_frame()
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
-        mask = np.zeros(hsv.shape[:2], dtype=np.uint8)
+        hsv = np.asarray(Image.fromarray(frame[:, :, ::-1]).convert('HSV'))
+        hue, saturation, value = hsv[:, :, 0], hsv[:, :, 1], hsv[:, :, 2]
+        mask = np.zeros(hue.shape, dtype=bool)
         for low, high in bounds[color]:
-            mask |= cv2.inRange(hsv, (low, 100, 60), (high, 255, 255))
-        contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        if not contours:
+            mask |= (hue >= low) & (hue <= high)
+        mask &= (saturation >= 100) & (value >= 60)
+        # Connected runs union only adjacent rows: choose one physical blob,
+        # so isolated speckles cannot combine into a false large target.
+        parents, areas, boxes = [], [], []
+        def root(label):
+            while parents[label] != label:
+                parents[label] = parents[parents[label]]
+                label = parents[label]
+            return label
+        previous = []
+        for y, row in enumerate(mask):
+            changes = np.diff(np.r_[False, row, False].astype(np.int8))
+            current = []
+            for left, right in zip(np.flatnonzero(changes == 1), np.flatnonzero(changes == -1)):
+                label = len(parents)
+                parents.append(label); areas.append(int(right-left)); boxes.append([int(left),y,int(right),y+1])
+                for pl, pr, other in previous:
+                    if pl <= right and pr >= left:
+                        a, b = root(label), root(other)
+                        if a != b:
+                            parents[b] = a
+                            areas[a] += areas[b]
+                            boxes[a] = [min(boxes[a][0],boxes[b][0]),min(boxes[a][1],boxes[b][1]),
+                                        max(boxes[a][2],boxes[b][2]),max(boxes[a][3],boxes[b][3])]
+                current.append((left,right,label))
+            previous = current
+        candidates = [i for i in range(len(parents)) if root(i) == i]
+        if not candidates:
             return {'detected': False, 'x': 0, 'y': 0, 'width': 0, 'height': 0, 'area': 0}
-        contour = max(contours, key=cv2.contourArea)
-        x, y, w, h = cv2.boundingRect(contour)
-        area = float(cv2.contourArea(contour))
-        return {'detected': area > 300, 'x': x + w / 2, 'y': y + h / 2,
-                'width': w, 'height': h, 'area': area, 'frame_width': 640, 'frame_height': 480}
+        largest = max(candidates,key=lambda i: areas[i])
+        x,y,right,bottom = boxes[largest]
+        return {'detected': areas[largest] > 300, 'x': (x+right)/2, 'y': (y+bottom)/2,
+                'width': right-x, 'height': bottom-y, 'area': areas[largest],
+                'frame_width': frame.shape[1], 'frame_height': frame.shape[0]}
 
     def record(self, seconds=10):
-        if not isinstance(seconds, (int, float)) or not 1 <= seconds <= 30:
+        if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not math.isfinite(seconds) or not 1 <= seconds <= 30:
             raise ValueError('Recording duration must be 1–30 seconds')
         self.jpeg()
         with self._lock:
@@ -155,39 +186,26 @@ class Media:
     def _record(self, name, seconds):
         writer = None
         try:
-            import cv2
-            writer = cv2.VideoWriter(str(self.recordings / name), cv2.VideoWriter_fourcc(*'MJPG'), 10, (640, 480))
-            if not writer.isOpened():
-                raise RuntimeError('Video encoder could not start')
+            writer = MjpegAVI(self.recordings / name)
             deadline = time.monotonic() + seconds
             while time.monotonic() < deadline and not self._record_stop.is_set():
-                writer.write(self.get_frame())
+                writer.write(self.jpeg())
                 self._record_stop.wait(0.1)
         except Exception as exc:
             self._record_error = str(exc)
         finally:
             if writer:
-                writer.release()
+                writer.close()
 
     def microphone(self, enabled: bool):
         with self._lock:
-            if enabled and (self.simulate or not shutil.which('arecord')):
+            if enabled and (self.simulate or not audio.available()):
                 raise RuntimeError('Microphone unavailable')
             self._mic_enabled = enabled
             if not enabled:
-                for process in tuple(self._mic_processes):
-                    self._terminate(process)
+                for device in tuple(self._mic_processes):
+                    device.stop()
         return self.status()['microphone']
-
-    @staticmethod
-    def _terminate(process):
-        if process.poll() is None:
-            process.terminate()
-            try:
-                process.wait(timeout=1)
-            except subprocess.TimeoutExpired:
-                process.kill()
-                process.wait(timeout=1)
 
     def audio_stream(self):
         with self._lock:
@@ -195,69 +213,83 @@ class Media:
                 raise RuntimeError('Microphone is muted')
             if self._mic_processes:
                 raise RuntimeError('Microphone already has a listener')
-            process = subprocess.Popen(['arecord', '-q', '-D', self._mic_device, '-t', 'raw', '-f', 'S16_LE',
-                                        '-r', '16000', '-c', '1'], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-            self._mic_processes.add(process)
+            device = audio.PCM(self._mic_device, capture=True)
+            self._mic_processes.add(device)
         def chunks():
             try:
-                # A streaming PCM WAV with an unknown length (browser consumes until mute/close).
                 yield struct.pack('<4sI4s4sIHHIIHH4sI', b'RIFF', 0x7fffffff, b'WAVE', b'fmt ', 16,
                                   1, 1, 16000, 32000, 2, 16, b'data', 0x7fffffdb)
-                while self._mic_enabled and process.poll() is None:
-                    chunk = process.stdout.read(3200)
+                while self._mic_enabled:
+                    chunk = device.read(1600)
                     if not chunk:
                         break
                     if self._mic_enabled:
                         yield chunk
-                if process.poll() not in (None, 0, -15):
-                    self._mic_error = 'Microphone capture failed; check ALSA device'
+            except Exception as exc:
+                self._mic_error = str(exc)
             finally:
-                self._terminate(process)
-                process.stdout.close()
+                device.close()
                 with self._lock:
-                    self._mic_processes.discard(process)
+                    self._mic_processes.discard(device)
         return chunks()
 
     def _speaker_ready(self):
         if self.simulate:
             raise RuntimeError('Speaker unavailable in simulation')
-        if any(p.poll() is None for p in self._audio_processes):
+        if self._audio_thread and self._audio_thread.is_alive():
             raise RuntimeError('Speaker is busy')
-        from robot_hat.utils import enable_speaker
-        enable_speaker()
         self._speaker_error = None
+        self._audio_stop.clear()
+
+    def _play(self, generate):
+        device = None
+        try:
+            data, rate, channels = generate()
+            if self._audio_stop.is_set():
+                return
+            from .hat import enable_speaker
+            enable_speaker()
+            device = audio.PCM(self._speaker_device, rate=rate, channels=channels)
+            with self._lock:
+                self._output_pcm = device
+                if self._audio_stop.is_set():
+                    device.stop()
+            device.write(data)
+            # Allow the final buffered samples to play while retaining cancellation.
+            self._audio_stop.wait(.15)
+        except Exception as exc:
+            self._speaker_error = str(exc)
+        finally:
+            if device:
+                device.close()
+            from .hat import disable_speaker
+            disable_speaker()
+            with self._lock:
+                self._output_pcm = None
+
+    def _start_audio(self, generate):
+        self._speaker_ready()
+        self._audio_thread = threading.Thread(target=self._play, args=(generate,), daemon=True, name='speaker')
+        self._audio_thread.start()
 
     def speak(self, text):
         if not isinstance(text, str) or not 1 <= len(text.strip()) <= 500:
             raise ValueError('Speech must contain 1–500 characters')
         with self._lock:
-            self._speaker_ready()
-            source = subprocess.Popen(['espeak', '--stdout', '--', text], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-            output = subprocess.Popen(['aplay', '-q', '-D', self._speaker_device], stdin=source.stdout,
-                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            source.stdout.close()
-            self._audio_processes = [source, output]
+            self._start_audio(lambda: audio.speech_wave(text))
         return {'speaking': True, 'text': text}
 
     def play_sound(self, name):
-        base = Path(os.environ.get('PICRAWLER_HOME', '~/picrawler')).expanduser() / 'examples'
-        files = {p.name: p for sub in ('sounds', 'musics') for p in (base / sub).glob('*')
-                 if p.suffix in ('.wav', '.mp3')}
-        if name not in files:
-            raise ValueError('Unknown sound; available: ' + ', '.join(sorted(files)))
+        # Validate before starting the background worker.
+        data = audio.effect_wave(name)
         with self._lock:
-            self._speaker_ready()
-            source = subprocess.Popen(['ffmpeg', '-v', 'error', '-i', str(files[name]), '-t', '30', '-f', 'wav', '-'],
-                                      stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-            output = subprocess.Popen(['aplay', '-q', '-D', self._speaker_device], stdin=source.stdout,
-                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-            source.stdout.close()
-            self._audio_processes = [source, output]
+            self._start_audio(lambda: data)
         return {'playing': name, 'maximum_seconds': 30}
 
     def stop(self):
         self._record_stop.set()
         self.microphone(False)
+        self._audio_stop.set()
         with self._lock:
-            for process in self._audio_processes:
-                self._terminate(process)
+            if self._output_pcm:
+                self._output_pcm.stop()
