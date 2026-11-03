@@ -1,0 +1,18 @@
+[Unit]
+Description=PiBotPal robot dashboard and MCP hardware server
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/PiBotPal
+ExecStart=%h/PiBotPal/.venv/bin/python -m pibotpal
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=-%h/.config/pibotpal/environment
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=10
+KillMode=control-group
+UMask=0077
+
+[Install]
+WantedBy=default.target
