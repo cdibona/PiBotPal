@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="theme-color" content="#0c1217"><meta name="color-scheme" content="dark">
+  <title>PiBotPal · Crawler control</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="PiBotPal home"><svg viewBox="0 0 40 40" aria-hidden="true"><path d="M12 14 5 9 2 17m26-3 7-5 3 8M12 26 5 31 2 23m26 3 7 5 3-8"/><rect x="11" y="11" width="18" height="18" rx="5"/><circle cx="17" cy="18" r="1"/><circle cx="23" cy="18" r="1"/></svg><span>PiBotPal<small>CRAWLER CONTROL</small></span></a>
+    <nav aria-label="Primary"><button class="tab active" data-tab="dashboard" aria-current="page">Dashboard</button><button class="tab" data-tab="testing">Testing lab <span id="example-count"></span></button></nav>
+    <div class="connection"><i id="connection-dot"></i><span id="connection-text">Connecting</span></div>
+    <button id="stop" class="danger"><span aria-hidden="true">■</span> STOP</button>
+  </header>
+  <main>
+    <div class="page-heading"><div><p class="eyebrow">SUNFOUNDER PICRAWLER / LIVE CONSOLE</p><h1 id="page-title">A little closer to the ground.</h1><p id="page-description">See what your crawler sees. Keep every leg in view.</p></div><div class="arm-box"><span id="arm-label">Motion disarmed</span><button id="arm" class="outline">Arm motion</button></div></div>
+    <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
+    <div class="metrics" aria-label="Robot status">
+      <div><span class="metric-label">ACTIVITY</span><strong id="activity">Connecting…</strong><small id="hardware-mode">Waiting for robot</small></div>
+      <div><span class="metric-label">FRONT CLEARANCE</span><strong><span id="distance">—</span> <em>cm</em></strong><small id="range-detail">Waiting for ultrasonic sensor</small></div>
+      <div><span class="metric-label">JOINT TELEMETRY</span><strong id="joint-count">— <em>/ 12</em></strong><small>Commanded position · no encoders</small></div>
+      <div><span class="metric-label">MICROPHONE</span><strong id="mic-metric">Muted</strong><small id="mic-detail">Capture off by default</small></div>
+    </div>
+    <section id="dashboard" class="tab-panel">
+      <div class="visual-grid">
+        <article class="panel camera-panel"><div class="panel-heading"><h2><span class="live-dot" id="camera-dot"></span>Camera</h2><span class="tag" id="camera-status">OFFLINE</span></div>
+          <div class="camera-stage"><img id="camera-feed" alt="Live view from the PiCrawler camera" hidden><div id="camera-empty" class="empty-state"><svg viewBox="0 0 48 48" aria-hidden="true"><rect x="5" y="13" width="28" height="24" rx="4"/><path d="m33 20 10-6v22l-10-6M15 13l3-5h9l3 5"/></svg><strong>Camera is off</strong><p>Enable the camera to see the live feed.</p></div><div class="feed-crosshair" aria-hidden="true"></div><div class="feed-top"><span id="feed-label">FRONT CAMERA</span><span id="clock">--:--:--</span></div><div class="range-overlay"><svg viewBox="0 0 180 80" aria-label="Ultrasonic range indicator"><path class="range-guide" d="M90 76 20 6M90 76 160 6M55 41a50 50 0 0 1 70 0M20 6a100 100 0 0 1 140 0"/><path id="range-return" d="M55 41a50 50 0 0 1 70 0"/><circle cx="90" cy="76" r="4"/></svg><span id="overlay-distance">NO RANGE RETURN</span></div></div>
+          <div class="panel-footer"><button id="camera-toggle" class="subtle">Enable camera</button><a class="text-link" id="snapshot" href="/snapshot.jpg" download="picrawler.jpg">Save snapshot ↗</a><span class="caption">Ultrasonic is a single forward return</span></div>
+        </article>
+        <article class="panel model-panel"><div class="panel-heading"><h2>Robot geometry</h2><div class="heading-actions"><span class="tag teal">3D</span><button id="reset-view" class="icon-button" title="Reset 3D view" aria-label="Reset 3D view">↺</button></div></div><div id="robot-view"><div class="model-badge"><i></i><span id="pose-label">Pose unknown until first command</span></div><div id="model-error" class="empty-state" hidden></div><div class="model-legend"><span><i class="teal-key"></i>Commanded joints</span><span><i class="orange-key"></i>Ultrasonic return</span></div><span class="orbit-hint">Drag to orbit · Scroll to zoom · Right-drag to pan</span></div><div class="panel-footer"><span class="caption">33 / 48 / 78 mm links · Body & sensor mounts schematic</span><span class="tag" title="No IMU is present; world orientation cannot be measured">BODY FRAME · NO IMU</span></div></article>
+      </div>
+      <div class="controls-grid">
+        <article class="panel drive-panel"><div class="panel-heading"><h2>Motion control</h2><span class="tag" id="motion-tag">DISARMED</span></div><div class="drive-content"><div class="direction-pad"><button data-move="forward" aria-label="Move forward one cycle">↑</button><button data-move="turn left" aria-label="Turn left one cycle">↶</button><button id="drive-stop" class="center-stop" aria-label="Stop motion">■</button><button data-move="turn right" aria-label="Turn right one cycle">↷</button><button data-move="backward" aria-label="Move backward one cycle">↓</button></div><div class="drive-options"><label for="speed">Movement speed <output id="speed-value">35%</output></label><input id="speed" type="range" min="10" max="60" value="35"><p>Each press runs one gait cycle.</p><div class="button-row"><button data-move="stand">Stand</button><button data-move="sit">Sit</button><button data-move="wave">Wave</button></div></div></div></article>
+        <article class="panel audio-panel"><div class="panel-heading"><h2>Audio</h2><span class="tag" id="audio-status">MUTED</span></div><div class="panel-body"><div class="audio-row"><div><strong>Robot microphone</strong><p>Listen through the crawler’s microphone.</p></div><button id="mic-toggle" class="outline">Unmute</button></div><audio id="microphone-player" controls hidden></audio><form id="speak-form"><label for="speech">Say something through the speaker</label><div class="input-action"><input id="speech" maxlength="250" placeholder="Hello from PiBotPal" autocomplete="off"><button type="submit">Speak ↗</button></div></form></div></article>
+      </div>
+      <article class="panel joints-panel"><div class="panel-heading"><h2>Leg & joint control</h2><span class="caption">Angles are logical commands before calibration offsets.</span></div><div class="joint-layout"><div><div id="joint-grid" class="joint-grid"></div><p class="caption joint-note">Current physical positions cannot be read from these servos. The 3D pose follows commands, not measured feedback.</p></div><form id="leg-form" class="leg-form"><h3>Place a foot</h3><label for="leg">Leg</label><select id="leg"><option value="0">1 · Front right</option><option value="1">2 · Left front</option><option value="2">3 · Left rear</option><option value="3">4 · Right rear</option></select><div class="coordinate-inputs"><label>X <input id="leg-x" type="number" value="60" min="0" max="150" step="1" required></label><label>Y <input id="leg-y" type="number" value="30" min="-100" max="150" step="1" required></label><label>Z <input id="leg-z" type="number" value="-40" min="-120" max="60" step="1" required></label></div><p class="caption">Millimeters in the selected leg’s local frame. Reachability is checked by the controller.</p><button type="submit" class="primary motion-control">Move selected leg</button></form></div></article>
+    </section>
+    <section id="testing" class="tab-panel" hidden><div class="test-intro"><div><h2>Small experiments. Real hardware.</h2><p>Reimplementations of the PiCrawler examples, with shared control and a stop button.</p></div><span id="test-summary" class="tag">Loading examples…</span></div><div id="test-running" class="notice" hidden></div><div id="examples" class="examples-grid"></div><article id="recordings-panel" class="panel" hidden><div class="panel-heading"><h2>Saved recordings</h2><span class="caption">Silent video · stored on this Pi</span></div><div id="recordings-list" class="panel-body"></div></article><article class="panel"><div class="panel-heading"><h2>Test output</h2><button id="clear-log" class="subtle">Clear</button></div><pre id="test-output" aria-live="polite">Select an experiment to begin.</pre></article></section>
+    <footer><span>PiBotPal <span class="footer-divider">/</span> Web → MCP → Robot HAT</span><span id="last-updated">Waiting for telemetry</span><span>Private access through Tailscale</span></footer>
+  </main>
+  <script type="module" src="/static/app.js"></script>
+</body></html>

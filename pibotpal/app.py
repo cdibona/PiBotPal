@@ -6,7 +6,6 @@ import fcntl
 import os
 from pathlib import Path
 import time
-from urllib.parse import urlsplit
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
@@ -22,7 +21,7 @@ from .examples import ExampleRunner
 def create_app(controller=None, media=None):
     controller = controller or Controller()
     media = media or Media(simulate=os.environ.get('PIBOTPAL_SIMULATE') == '1')
-    examples = ExampleRunner(controller, media)
+    examples = ExampleRunner(controller, media, data_dir=media.root)
     domain = os.environ.get('PIBOTPAL_HOST', 'spiderbot.tail689a35.ts.net')
     hosts = {'127.0.0.1:8765', 'localhost:8765', domain}
     hosts.update(filter(None, os.environ.get('PIBOTPAL_EXTRA_HOSTS', '').split(',')))
@@ -53,6 +52,8 @@ def create_app(controller=None, media=None):
     async def arm(armed: bool) -> dict:
         """Explicitly enable motion, or disarm and cancel all active work. No motion on arming."""
         lease['last_seen'] = time.monotonic()
+        if armed:
+            ensure_manual()
         if not armed:
             await invoke(examples.stop)
         result = await invoke(controller.arm, armed)
@@ -67,7 +68,8 @@ def create_app(controller=None, media=None):
         return await get_status()
 
     def ensure_manual():
-        if examples.status().get('running') or examples.status().get('busy'):
+        state = examples.status()
+        if state.get('running') and not state.get('permits_manual_motion'):
             raise ValueError('Stop the active example before manual movement')
 
     @mcp.tool()
@@ -116,6 +118,7 @@ def create_app(controller=None, media=None):
     @mcp.tool()
     async def microphone(enabled: bool) -> dict:
         """Explicit microphone consent; disabling immediately terminates capture. Stream: /audio.wav."""
+        lease['last_seen'] = time.monotonic()
         return await invoke(media.microphone, enabled)
 
     @mcp.tool()
@@ -136,9 +139,10 @@ def create_app(controller=None, media=None):
     async def watchdog():
         while True:
             await asyncio.sleep(1)
-            if controller.status().get('armed') and time.monotonic() - lease['last_seen'] > 15:
+            if time.monotonic() - lease['last_seen'] > 15 and (controller.status().get('armed') or media.status()['microphone']['enabled']):
                 await invoke(controller.stop)
                 await invoke(examples.stop)
+                await invoke(media.stop)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -160,7 +164,7 @@ def create_app(controller=None, media=None):
                     await task
                 except asyncio.CancelledError:
                     pass
-                await invoke(examples.stop)
+                await invoke(examples.close)
                 await invoke(controller.close)
                 await invoke(media.close)
 
