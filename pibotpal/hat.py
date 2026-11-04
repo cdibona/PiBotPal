@@ -35,6 +35,7 @@ class Hat:
         self._bus = bus or I2C(os.getenv('PIBOTPAL_I2C_DEVICE', '/dev/i2c-1'))
         self._lock = threading.RLock()
         self._timers = set()
+        self._pulses = {}
         self.address = address
         if self.address is None:
             configured = os.getenv('PIBOTPAL_HAT_ADDRESS')
@@ -75,15 +76,18 @@ class Hat:
             raise ValueError('PiCrawler servo channel must be 0–11')
         if isinstance(angle, bool) or not isinstance(angle, (int, float)) or not math.isfinite(angle) or not -90 <= angle <= 90:
             raise ValueError('Servo angle must be finite and within -90 to 90 degrees')
-        # 72 MHz / 352 / 4095 = 49.95 Hz; 500–2500 us servo pulses.
+        # 72 MHz / 72 / 20000 = 50 Hz. A one-microsecond tick gives
+        # 0.09-degree resolution while preserving 500–2500 us pulse limits.
         timer = channel // 4
-        pulse = int((1500 + angle * (1000 / 90)) * 4095 / 20000)
+        pulse = round(1500 + angle * (1000 / 90))
         with self._lock:
             if timer not in self._timers:
-                self._word(0x40 + timer, 351)
-                self._word(0x44 + timer, 4095)
+                self._word(0x40 + timer, 71)
+                self._word(0x44 + timer, 20000)
                 self._timers.add(timer)
-            self._word(0x20 + channel, pulse)
+            if self._pulses.get(channel) != pulse:
+                self._word(0x20 + channel, pulse)
+                self._pulses[channel] = pulse
 
     def close(self):
         with self._lock:

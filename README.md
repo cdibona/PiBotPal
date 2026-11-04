@@ -33,6 +33,18 @@ Read status, explicitly arm, and issue bounded actions. Poll `get_status` at lea
 
 Camera frames and audio use separate media URLs for efficient streaming; their controls go through MCP. `/audio.wav` cannot open the microphone while muted. Recordings are silent, bounded to 30 seconds, and saved under `~/.local/share/pibotpal/recordings`; the dashboard offers downloads. Microphone audio is live only and is not stored.
 
+## Motion timing
+
+Joint motion runs on a shared 50 Hz timeline at a rate proportional to requested
+speed, rather than a fixed delay for every pose or path sample. Unchanged poses
+return immediately. Single-pose moves ease in and out; gait samples stream
+continuously with rounded foot swings and gradual body transfers. Late frames
+are skipped instead of sending stale updates in a burst. The HAT uses a 50 Hz
+PWM period with one-microsecond pulse resolution (about 0.09 degrees), and
+unchanged pulse values do not generate redundant bus writes. Startup/arming
+remain free of PWM writes; the first explicit full-pose command still starts
+from an unknown physical position because the servos have no encoders.
+
 ## Geometry and limits
 
 The replacement crawl and gesture trajectories have been validated in simulation, but still need physical balance and travel checks on the assembled bot.

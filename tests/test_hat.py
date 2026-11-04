@@ -26,9 +26,9 @@ def test_servo_construction_does_not_write_and_timer_initializes_once():
     servo = hat.servo(9)
     assert bus.calls == []
     servo.angle(0)
-    assert bus.calls == [(0x14, b'\x42\x01\x5f'), (0x14, b'\x46\x0f\xff'), (0x14, b'\x29\x01\x33')]
+    assert bus.calls == [(0x14, b'\x42\x00\x47'), (0x14, b'\x46\x4e\x20'), (0x14, b'\x29\x05\xdc')]
     hat.servo(10).angle(-90)
-    assert bus.calls[-1] == (0x14, b'\x2a\x00\x66')
+    assert bus.calls[-1] == (0x14, b'\x2a\x01\xf4')
     assert len(bus.calls) == 4
     hat.close()
     assert bus.closed
@@ -75,3 +75,16 @@ def test_sonar_uses_kernel_timestamps(monkeypatch):
     sonar = Sonar.__new__(Sonar)
     sonar.timeout, sonar._echo, sonar._trigger = .025, Echo(), Trigger()
     assert sonar.read() == pytest.approx(34.33)
+
+
+def test_servo_small_changes_have_one_microsecond_resolution_and_skip_unchanged():
+    bus = Bus()
+    servo = Hat(bus=bus, address=0x14).servo(0)
+    servo.angle(0)
+    before = len(bus.calls)
+    servo.angle(0.001)
+    assert len(bus.calls) == before
+    servo.angle(.1)
+    assert bus.calls[-1] == (0x14, b'\x20\x05\xdd')  # 1501 us
+    servo.angle(90)
+    assert int.from_bytes(bus.calls[-1][1][1:], 'big') == 2500

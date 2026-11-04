@@ -35,3 +35,26 @@ def test_plans_are_fresh():
     planner = MotionPlan()
     planner.forward[0][0][0] = 999
     assert planner.forward[0][0][0] == 45
+
+
+@pytest.mark.parametrize('action', ('forward', 'backward', 'turn_left', 'turn_right'))
+def test_crawl_has_small_continuous_samples_and_no_duplicate_dwell_poses(action):
+    for parity in (0, 1):
+        planner = MotionPlan()
+        planner.stand_position = parity
+        poses = getattr(planner, action)
+        distances = [max(math.dist(a, b) for a, b in zip(start, end))
+                     for start, end in zip(poses, poses[1:])]
+        # The old lift/slide/lower schedule jumped a full 10 mm at each corner.
+        # Rounded swing samples keep each geometric increment below 5 mm.
+        assert all(0 < distance < 5 for distance in distances)
+        for offset in range(0, 32, 8):
+            swing = poses[offset:offset + 9]
+            raised = [index for index, foot in enumerate(swing[4]) if foot[2] > -50]
+            assert len(raised) == 1
+            foot = raised[0]
+            assert swing[0][foot][2] == -50
+            assert swing[4][foot][2] == -40
+            assert swing[-1][foot][2] == -50
+        # The final body transfer keeps all feet on their support plane.
+        assert all(foot[2] == -50 for pose in poses[-9:] for foot in pose)

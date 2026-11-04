@@ -19,6 +19,11 @@ def displaced(pose, dx=0, dy=0, dz=0):
             for (x, y, z), (sx, sy) in zip(pose, SIGNS)]
 
 
+def smooth_progress(fraction):
+    """Quintic progress with zero endpoint velocity and acceleration."""
+    return fraction ** 3 * (10 + fraction * (-15 + 6 * fraction))
+
+
 class MotionPlan:
     """Generate fresh pose lists so callers cannot mutate later actions."""
     def __init__(self):
@@ -49,11 +54,28 @@ class MotionPlan:
             c, s = math.cos(rotation), math.sin(rotation)
             target = [sx * (c * world_x - s * world_y) - BODY_SIDE / 2,
                       sy * (s * world_x + c * world_y + travel) - BODY_SIDE / 2, z]
-            for foot in ([x, y, z + 10], [target[0], target[1], z + 10], target):
+            # Advance and lift together along one rounded swing, rather than
+            # braking at separate lift/translate/lower corners. Samples belong
+            # to one continuous path, with no intentional waypoint dwell.
+            for sample in range(1, 9):
+                fraction = sample / 8
+                progress = smooth_progress(fraction)
+                foot = [x + (target[0] - x) * progress,
+                        y + (target[1] - y) * progress,
+                        z + 10 * math.sin(math.pi * fraction) ** 2]
+                if sample == 8:
+                    foot = target[:]
                 pose = [p[:] for p in pose]
                 pose[index] = foot
                 poses.append(pose)
-        poses.append(neutral)
+        # With all feet grounded, translate the body back over its stance in
+        # small samples too. This retains the existing bounded stride and turn
+        # endpoints while avoiding one abrupt final recenter segment.
+        grounded = [p[:] for p in pose]
+        for sample in range(1, 9):
+            progress = smooth_progress(sample / 8)
+            poses.append([[a + (b - a) * progress for a, b in zip(start, end)]
+                          for start, end in zip(grounded, neutral)])
         return poses
 
     @property

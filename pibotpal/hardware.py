@@ -197,15 +197,16 @@ class Controller:
         def perform():
             if self._moves is None:
                 self._moves = self._moves_factory()
+            path = []
             for _ in range(steps):
                 self._check_cancel()
                 poses = getattr(self._moves, name.replace(' ', '_'))
                 from .motion import validate_plan
                 validate_plan(poses)
-                for pose in poses:
-                    self._move(self._pose_angles(pose), speed)
+                path.extend(self._pose_angles(pose) for pose in poses)
                 if name in ('forward', 'backward', 'turn left', 'turn right', 'turn left angle', 'turn right angle'):
                     self._moves.stand_position = (self._moves.stand_position + 1) & 1
+            self._move_path(path, speed)
         return self._submit(name, perform)
 
     def _pose_angles(self, coords, strict=True):
@@ -316,24 +317,64 @@ class Controller:
                     self._angles[i] = DIRECTIONS[i] * raw - self._offsets[i]
 
     def _move(self, targets, speed):
+        self._move_path([targets], speed)
+
+    def _move_path(self, targets, speed):
+        """Stream a complete path on one clock; intermediate samples have no dwell.
+
+        Speed is a joint rate percentage (180 degrees/second at 100%). Single
+        pose commands ease into/out of motion. A missed deadline skips elapsed
+        samples instead of issuing a burst of stale commands to catch up.
+        """
         self._check_cancel()
         self._ensure_servos()
         with self._lock:
             start = list(self._angles)
+        targets = list(targets)
+        if not targets:
+            return
         if any(a is None for a in start):
-            # No encoders: interpolating from a guessed position is misleading.
-            # The first full-pose command initializes the PWM targets.
-            self._write(targets)
+            # The first commanded pose cannot interpolate from an unknown
+            # physical position. Subsequent path samples use the shared clock.
+            self._write(targets.pop(0))
             if self._cancel.wait(0.25):
                 raise MotionCancelled()
+            with self._lock:
+                start = list(self._angles)
+        points, lengths = [start], []
+        for target in targets:
+            distance = max(abs(a-b) for a,b in zip(points[-1], target))
+            if distance > 1e-9:
+                points.append(list(target))
+                lengths.append(distance)
+        if not lengths:
             return
-        duration = max((1000 - 9.9 * speed)/1000, max(abs(a-b) for a,b in zip(start,targets))/428)
-        count = max(1, math.ceil(duration / 0.02))
-        for step in range(1, count+1):
-            begin = time.monotonic()
-            self._write([a+(b-a)*step/count for a,b in zip(start, targets)])
-            if self._cancel.wait(max(0, duration/count - (time.monotonic()-begin))):
+        rate = 180.0 * speed / 100.0
+        total = sum(lengths)
+        ease = len(lengths) == 1
+        duration = max(0.02, total / rate * (1.5 if ease else 1.0))
+        started = time.monotonic()
+        deadline = started + 0.02
+        segment, consumed = 0, 0.0
+        while True:
+            self._check_cancel()
+            elapsed = max(0.0, time.monotonic() - started)
+            progress = min(1.0, elapsed / duration)
+            fraction = progress * progress * (3 - 2 * progress) if ease else progress
+            distance = total * fraction
+            while segment < len(lengths)-1 and distance > consumed + lengths[segment]:
+                consumed += lengths[segment]
+                segment += 1
+            weight = min(1.0, max(0.0, (distance-consumed)/lengths[segment]))
+            self._write([a+(b-a)*weight for a,b in zip(points[segment], points[segment+1])])
+            if progress >= 1:
+                return
+            now = time.monotonic()
+            if deadline <= now:
+                deadline += (math.floor((now-deadline)/0.02)+1)*0.02
+            if self._cancel.wait(max(0.0, deadline-now)):
                 raise MotionCancelled()
+            deadline += 0.02
 
     def _run(self):
         while not self._closed.is_set():
