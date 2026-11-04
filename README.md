@@ -21,6 +21,17 @@ Install the persistent user service and Tailscale HTTPS proxy with `scripts/inst
 - Restart: `systemctl --user restart pibotpal`
 - Disable: `systemctl --user disable --now pibotpal`
 
+Systemd waits for the read-only `/health` readiness probe before reporting the
+service started. `/health` and `get_status` share a per-process
+`server_instance_id`, so clients can identify a restarted backend. Shutdown
+allows three seconds for open streams before cancelling them, then releases
+hardware normally. The dashboard retries telemetry and camera EOF/errors/stalls
+independently; recovering video never arms motion or unmutes the microphone.
+Reload an older open page once after updating to load this recovery logic.
+
+For the mocked browser recovery regression (no hardware/network calls):
+`.venv/bin/python tests/browser/check_reconnect.py`.
+
 Configuration can be placed in `~/.config/pibotpal/environment`: `PIBOTPAL_HOST`, `PIBOTPAL_DATA`, `PIBOTPAL_MIC_DEVICE` (default `plughw:CARD=Device,DEV=0`), `PIBOTPAL_SPEAKER_DEVICE` (default `default`). Never commit secrets. Use `PIBOTPAL_SIMULATE=1` to develop without GPIO/motion; the UI labels simulated state and does not fabricate camera/range data.
 
 ## Control contract

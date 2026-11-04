@@ -6,6 +6,8 @@ After=network.target
 Type=simple
 WorkingDirectory=%h/PiBotPal
 ExecStart=%h/PiBotPal/.venv/bin/python -m pibotpal
+ExecStartPost=%h/PiBotPal/.venv/bin/python %h/PiBotPal/scripts/wait-ready.py
+TimeoutStartSec=45
 Environment=PYTHONUNBUFFERED=1
 EnvironmentFile=-%h/.config/pibotpal/environment
 Restart=on-failure

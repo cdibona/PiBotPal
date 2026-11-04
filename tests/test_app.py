@@ -162,3 +162,10 @@ def test_app_downloads_are_allowlisted_attachments(client, tmp_path):
         assert 'attachment;' in response.headers['content-disposition']
     assert client.get('/downloads/secret.txt').status_code == 404
     assert client.get('/downloads/build.json').status_code == 404
+
+
+def test_restart_identity_is_stable_and_shared_with_telemetry(client):
+    first=client.get('/health').json()['server_instance_id']
+    second=client.get('/health').json()['server_instance_id']
+    assert len(first)==32 and first==second
+    assert call(client,'get_status')['structuredContent']['server_instance_id']==first

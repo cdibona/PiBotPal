@@ -1,9 +1,87 @@
 const $=id=>document.getElementById(id);
-let status={},connected=false,rpcId=0,initialized=false,polling=false,model=null,cameraSource=false,previousMic=false,examples=[];
+let status={},connected=false,rpcId=0,initialized=false,polling=false,model=null,previousMic=false,examples=[];
 const names=['Right front','Left front','Left rear','Right rear'];
 const jointNames=['Knee','Shoulder','Hip'];
 const limits=[[-90,90],[-10,90],[-60,60]];
-let pending=0;
+let pending=0, lastServerInstance=null;
+
+// A live stream owns its connection and retries EOF/errors independently of telemetry.
+// This also catches short restarts that happen between successful status polls.
+class CameraFeed {
+  constructor(element, changed) {
+    this.element=element;this.changed=changed;this.enabled=false;this.generation=0;
+    this.instance=null;this.controller=null;this.objectUrl=null;this.state='off';
+  }
+  setEnabled(enabled, instance) {
+    const restarted=instance&&this.instance&&instance!==this.instance;
+    if(instance)this.instance=instance;
+    if(enabled===this.enabled&&!restarted)return;
+    this.enabled=enabled;this.generation++;
+    this.controller?.abort();
+    if(this.objectUrl){URL.revokeObjectURL(this.objectUrl);this.objectUrl=null;}
+    this.element.removeAttribute('src');
+    if(enabled)this.run(this.generation);else this.report('off');
+  }
+  report(state){this.state=state;this.changed(state);}
+  async run(generation) {
+    let delay=1000;
+    while(this.enabled&&generation===this.generation){
+      const controller=new AbortController();this.controller=controller;
+      let lastFrame=performance.now();
+      const watchdog=setInterval(()=>{if(performance.now()-lastFrame>10000)controller.abort();},1000);
+      this.report('connecting');
+      try{
+        const response=await fetch(`/video.mjpg?t=${Date.now()}`,{signal:controller.signal,cache:'no-store'});
+        if(!response.ok||!response.body||!response.headers.get('content-type')?.startsWith('multipart/x-mixed-replace'))throw new Error('Camera stream unavailable');
+        const reader=response.body.getReader();let buffered=new Uint8Array(0),length=null;
+        while(this.enabled&&generation===this.generation){
+          const {done,value}=await reader.read();
+          if(done)throw new Error('Camera stream ended');
+          if(buffered.length+value.length>1024*1024+8192)throw new Error('Camera frame buffer too large');
+          const combined=new Uint8Array(buffered.length+value.length);combined.set(buffered);combined.set(value,buffered.length);buffered=combined;
+          while(true){
+            if(length===null){
+              let end=-1;
+              for(let i=0;i+3<buffered.length;i++)if(buffered[i]===13&&buffered[i+1]===10&&buffered[i+2]===13&&buffered[i+3]===10){end=i;break;}
+              if(end<0){if(buffered.length>8192)throw new Error('Camera headers too large');break;}
+              if(end>8192)throw new Error('Camera headers too large');
+              const header=new TextDecoder().decode(buffered.subarray(0,end));
+              const match=header.match(/(?:^|\r\n)Content-Length:\s*(\d+)\s*(?:\r\n|$)/i);
+              length=match?Number(match[1]):0;
+              if(!Number.isInteger(length)||length<4||length>1024*1024)throw new Error('Invalid camera frame length');
+              buffered=buffered.slice(end+4);
+            }
+            if(buffered.length<length)break;
+            const frame=buffered.slice(0,length);buffered=buffered.slice(length);length=null;
+            if(frame[0]!==255||frame[1]!==216||frame.at(-2)!==255||frame.at(-1)!==217)throw new Error('Invalid JPEG frame');
+            if(!this.enabled||generation!==this.generation)return;
+            const next=URL.createObjectURL(new Blob([frame],{type:'image/jpeg'}));
+            this.element.src=next;
+            if(this.objectUrl)URL.revokeObjectURL(this.objectUrl);
+            this.objectUrl=next;this.element.dataset.frameCount=String(Number(this.element.dataset.frameCount||0)+1);lastFrame=performance.now();delay=1000;this.report('live');
+          }
+          if(buffered.length>1024*1024+8192)throw new Error('Camera frame buffer too large');
+        }
+      }catch(error){
+        if(!this.enabled||generation!==this.generation)return;
+        this.report('retrying');
+      }finally{clearInterval(watchdog);controller.abort();}
+      await new Promise(resolve=>setTimeout(resolve,delay));
+      delay=Math.min(8000,delay*2);
+    }
+  }
+}
+
+const cameraFeed=new CameraFeed($('camera-feed'),state=>{
+  const live=state==='live';
+  $('camera-feed').hidden=!live;$('camera-empty').hidden=live;
+  if(state==='connecting'||state==='retrying'){
+    $('camera-empty').querySelector('strong').textContent='Reconnecting camera';
+    $('camera-empty').querySelector('p').textContent='The video feed will resume automatically.';
+  }
+  $('camera-status').textContent=live?'LIVE':state==='off'?'OFF':'RECONNECTING';
+  $('camera-dot').classList.toggle('active',live);
+});
 
 async function rpc(method,params={},options={}){
   const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),options.timeout||15000);
@@ -30,6 +108,8 @@ async function command(name,args={},message){pending++;updateControls();try{cons
 function motionAllowed(){return connected&&status.armed&&!status.busy&&!status.estop&&!status.plan?.running&&!pending;}
 function updateControls(){document.querySelectorAll('[data-move],.motion-control,.joint-slider').forEach(button=>button.disabled=!motionAllowed());$('arm').disabled=!connected||pending>0;$('arm').textContent=status.armed?'Disarm motion':'Arm motion';$('arm').classList.toggle('armed',Boolean(status.armed));$('arm-label').textContent=status.estop?'Stop latched · arm to reset':status.armed?'Motion armed':'Motion disarmed';$('motion-tag').textContent=status.estop?'STOPPED':status.busy?'MOVING':status.armed?'ARMED':'DISARMED';$('motion-tag').className=`tag ${status.estop?'red':status.armed?'teal':''}`;}
 function render(state){
+  if(state.server_instance_id&&lastServerInstance&&state.server_instance_id!==lastServerInstance)initialized=false;
+  if(state.server_instance_id)lastServerInstance=state.server_instance_id;
   status=state;const angles=state.servo_angles||[];
   const power=state.power||{powered:true,voltage:state.battery_voltage,valid:Number.isFinite(state.battery_voltage)},powerValid=power.valid!==false&&Number.isFinite(power.voltage);
   $('battery').textContent=powerValid?`Battery ${power.voltage.toFixed(2)} V`:'Battery unavailable';
@@ -55,9 +135,8 @@ function render(state){
   for(let i=0;i<12;i++){const input=$(`joint-${i}`),value=angles[i];$(`joint-value-${i}`).textContent=Number.isFinite(value)?`${value.toFixed(1)}°`:'—';if(Number.isFinite(value)&&document.activeElement!==input)input.value=value;}
   const cam=state.camera||state.media?.camera||{};
   const camOn=Boolean(cam.enabled);
-  $('camera-toggle').textContent=camOn?'Disable camera':'Enable camera';$('camera-status').textContent=cam.error?'ERROR':camOn?'LIVE':'OFF';$('camera-dot').classList.toggle('active',camOn&&!cam.error);
-  if(camOn&&!cameraSource){$('camera-feed').src=`/video.mjpg?t=${Date.now()}`;cameraSource=true;$('camera-feed').hidden=false;$('camera-empty').hidden=true;}
-  if(!camOn&&cameraSource){$('camera-feed').removeAttribute('src');cameraSource=false;}
+  $('camera-toggle').textContent=camOn?'Disable camera':'Enable camera';
+  cameraFeed.setEnabled(camOn,state.server_instance_id);
   if(!camOn){$('camera-feed').hidden=true;$('camera-empty').hidden=false;$('camera-empty').querySelector('strong').textContent=cam.error?'Camera unavailable':'Camera is off';$('camera-empty').querySelector('p').textContent=cam.error||'Enable the camera to see the live feed.';}
   $('snapshot').style.pointerEvents=camOn?'auto':'none';$('snapshot').style.opacity=camOn?'1':'.35';$('snapshot').setAttribute('aria-disabled',String(!camOn));
   const mic=state.microphone||state.media?.microphone||{},micOn=Boolean(mic.enabled);
@@ -68,10 +147,10 @@ function render(state){
   if(run.finished_at&&run.finished_at!==render.lastFinished){render.lastFinished=run.finished_at;log(run.error?`Test failed: ${run.error}`:{test:run.example_id,result:run.result});}
   renderRecordings(state.recordings||[]);model?.update(state);plans?.update(state);updateControls();$('last-updated').textContent=`Telemetry ${new Date().toLocaleTimeString()}`;
 }
-async function refresh(){if(polling)return;polling=true;try{const state=await call('get_status');connected=true;$('connection-dot').className='connected';$('connection-text').textContent='Connected';render(state);}catch(error){connected=false;plans?.update({});initialized=false;$('connection-dot').className='error';$('connection-text').textContent='Disconnected';$('activity').textContent='Disconnected';$('last-updated').textContent='Telemetry unavailable';$('battery').textContent='Battery unavailable';$('power-voltage').textContent='—';$('power-detail').textContent='Disconnected · reading unavailable';$('power-state').textContent='CONNECTION LOST';$('power-state').className='tag orange';$('power-charging').textContent='Unknown';$('power-external').textContent='Unknown';$('power-runtime').textContent='Unavailable';$('power-sleep').textContent='Unavailable';
+async function refresh(){if(polling)return;polling=true;try{const state=await call('get_status',{}, {timeout:5000});connected=true;$('connection-dot').className='connected';$('connection-text').textContent='Connected';render(state);}catch(error){connected=false;plans?.update({});initialized=false;$('connection-dot').className='error';$('connection-text').textContent='Disconnected';$('activity').textContent='Disconnected';$('last-updated').textContent='Telemetry unavailable';$('battery').textContent='Battery unavailable';$('power-voltage').textContent='—';$('power-detail').textContent='Disconnected · reading unavailable';$('power-state').textContent='CONNECTION LOST';$('power-state').className='tag orange';$('power-charging').textContent='Unknown';$('power-external').textContent='Unknown';$('power-runtime').textContent='Unavailable';$('power-sleep').textContent='Unavailable';
     $('distance').textContent='—';$('range-detail').textContent='Disconnected · return unavailable';$('overlay-distance').textContent='NO LIVE RANGE RETURN';$('range-return').style.opacity='0';
     model?.update({...status,ultrasonic:{...status.ultrasonic,valid:false},camera:{enabled:false},microphone:{enabled:false},speaker:{busy:false}});
-    $('camera-feed').removeAttribute('src');$('camera-feed').hidden=true;cameraSource=false;$('camera-empty').hidden=false;$('camera-empty').querySelector('strong').textContent='Camera disconnected';$('camera-empty').querySelector('p').textContent='Waiting for the robot connection to return.';$('camera-status').textContent='DISCONNECTED';$('camera-dot').classList.remove('active');
+    cameraFeed.setEnabled(false);$('camera-feed').hidden=true;$('camera-empty').hidden=false;$('camera-empty').querySelector('strong').textContent='Camera disconnected';$('camera-empty').querySelector('p').textContent='Waiting for the robot connection to return.';$('camera-status').textContent='DISCONNECTED';$('camera-dot').classList.remove('active');
     $('microphone-player').pause();$('mic-metric').textContent='Unavailable';$('mic-detail').textContent='Robot disconnected';updateControls();}finally{polling=false;}}
 function renderRecordings(recordings){const signature=recordings.map(r=>r.name).join('|');if(signature===renderRecordings.signature)return;renderRecordings.signature=signature;$('recordings-list').replaceChildren();$('recordings-panel').hidden=!recordings.length;for(const recording of recordings){const a=document.createElement('a');a.className='recording-link';a.textContent=`${recording.name} ↓`;a.href=recording.url;a.download=recording.name;$('recordings-list').append(a);}}
 function initJoints(){for(let leg=0;leg<4;leg++){const section=document.createElement('div');section.className='joint-leg';const h=document.createElement('h3');h.innerHTML=`<span>0${leg+1}</span>${names[leg]}`;section.append(h);for(let joint=0;joint<3;joint++){const index=leg*3+joint,row=document.createElement('div');row.className='joint-row';row.innerHTML=`<label for="joint-${index}">${jointNames[joint]}<output id="joint-value-${index}">—</output></label><input id="joint-${index}" class="joint-slider" type="range" min="${limits[joint][0]}" max="${limits[joint][1]}" value="0" step="1" disabled aria-label="${names[leg]} ${jointNames[joint]} angle">`;const input=row.querySelector('input');input.addEventListener('input',()=>{$(`joint-value-${index}`).textContent=`${input.value}°`;});input.addEventListener('change',()=>{if(motionAllowed())command('set_servo',{index,angle:Number(input.value),speed:20}).catch(()=>{});});section.append(row);}$('joint-grid').append(section);}$('leg').replaceChildren(...names.map((name,index)=>{const option=document.createElement('option');option.value=index;option.textContent=`${index+1} · ${name}`;return option;}));}
@@ -102,14 +181,15 @@ document.querySelectorAll('[data-move]').forEach(button=>button.addEventListener
 $('speed').addEventListener('input',()=>{$('speed-value').textContent=`${$('speed').value}%`;});
 $('leg-form').addEventListener('submit',event=>{event.preventDefault();command('set_leg',{leg:Number($('leg').value),x:Number($('leg-x').value),y:Number($('leg-y').value),z:Number($('leg-z').value),speed:Number($('speed').value)}).catch(()=>{});});
 $('camera-toggle').addEventListener('click',()=>command('camera',{enabled:!status.camera?.enabled}).catch(()=>{}));
-$('camera-feed').addEventListener('error',()=>{$('camera-feed').hidden=true;$('camera-empty').hidden=false;$('camera-empty').querySelector('strong').textContent='Camera feed unavailable';$('camera-empty').querySelector('p').textContent=status.camera?.error||'Toggle the camera to reconnect.';$('camera-status').textContent='NO FEED';});
-$('camera-feed').addEventListener('load',()=>{$('camera-feed').hidden=false;$('camera-empty').hidden=true;});
+$('camera-feed').addEventListener('error',()=>{if(cameraFeed.enabled)cameraFeed.controller?.abort();});
+$('camera-feed').addEventListener('load',()=>{if(cameraFeed.enabled){$('camera-feed').hidden=false;$('camera-empty').hidden=true;}});
 $('mic-toggle').addEventListener('click',async()=>{try{const enabling=!status.microphone?.enabled;await command('microphone',{enabled:enabling});if(enabling)$('microphone-player').play().catch(()=>notice('Microphone is enabled. Press play in the audio control to listen.'));}catch{}});
 $('speak-form').addEventListener('submit',event=>{event.preventDefault();const text=$('speech').value.trim();if(text)command('speak',{text},'Speech sent to the robot speaker.').catch(()=>{});});
 $('clear-log').addEventListener('click',()=>{$('test-output').textContent='Select an experiment to begin.';});
 $('reset-view').addEventListener('click',()=>model?.reset());
 window.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();stop();}});
-window.addEventListener('offline',()=>{connected=false;plans?.update({});updateControls();});
+window.addEventListener('offline',()=>{connected=false;cameraFeed.setEnabled(false);plans?.update({});updateControls();});
+window.addEventListener('online',()=>refresh());
 function stopOnLeave(){ $('microphone-player').pause();if(!initialized||!(status.armed||status.microphone?.enabled||status.examples?.running||status.plan?.running))return;fetch('/mcp',{method:'POST',keepalive:true,headers:{'Content-Type':'application/json','Accept':'application/json, text/event-stream','MCP-Protocol-Version':'2025-03-26'},body:JSON.stringify({jsonrpc:'2.0',id:++rpcId,method:'tools/call',params:{name:'stop',arguments:{}}})}).catch(()=>{});notice('Motion stopped and audio muted when this page left the foreground.');}
 window.addEventListener('pagehide',stopOnLeave);document.addEventListener('visibilitychange',()=>{if(document.hidden)stopOnLeave();else refresh();});
 try{const {RobotView}=await import('./robot-view.js');model=new RobotView($('robot-view'));}catch(error){$('model-error').textContent=`3D rendering unavailable: ${error.message}`;$('model-error').hidden=false;}
@@ -117,4 +197,4 @@ try{const {initAdmin}=await import('./admin.js');admin=initAdmin({call,notice,on
 try{const {initPlans}=await import('./plans.js');plans=initPlans({call,notice,getStatus:()=>connected?status:{}});}catch(error){$('plan').textContent=`Plans unavailable: ${error.message}`;}
 try{const {initHardware}=await import('./hardware-admin.js');hardwareAdmin=initHardware({call});}catch(error){console.error('Hardware inventory unavailable',error);}
 selectTab(location.hash.slice(1),false);
-await refresh();loadExamples();setInterval(refresh,500);setInterval(()=>{$('clock').textContent=new Date().toLocaleTimeString('en-GB');},1000);
+setInterval(refresh,500);refresh();loadExamples();setInterval(()=>{$('clock').textContent=new Date().toLocaleTimeString('en-GB');},1000);

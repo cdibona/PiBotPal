@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import time
+from uuid import uuid4
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
@@ -36,6 +37,7 @@ def create_app(controller=None, media=None):
     origins = {f'http://{h}' for h in hosts if h.startswith(('localhost', '127.0.0.1'))}
     origins.add(f'https://{domain}')
     lease = {'last_seen': 0.0}
+    server_instance_id = uuid4().hex
     plans = PlanStore(media.root, controller)
     hardware_options = HardwareOptions(media.root)
     motion_gate = asyncio.Lock()
@@ -103,6 +105,7 @@ def create_app(controller=None, media=None):
                                          'finished_at': job['finished_at']}
             except ValueError:
                 llm_example['id'] = None
+        state['server_instance_id'] = server_instance_id
         state['control_lease_seconds'] = 15
         return state
 
@@ -430,7 +433,8 @@ def create_app(controller=None, media=None):
 
     @app.get('/health')
     async def health():
-        return {'status': 'ok', 'service': 'PiBotPal', 'simulation': os.environ.get('PIBOTPAL_SIMULATE') == '1'}
+        return {'status': 'ok', 'service': 'PiBotPal', 'server_instance_id': server_instance_id,
+                'simulation': os.environ.get('PIBOTPAL_SIMULATE') == '1'}
 
     @app.get('/snapshot.jpg')
     async def snapshot():
