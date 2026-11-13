@@ -38,7 +38,7 @@ class CameraFeed {
         while(this.enabled&&generation===this.generation){
           const {done,value}=await reader.read();
           if(done)throw new Error('Camera stream ended');
-          if(buffered.length+value.length>1024*1024+8192)throw new Error('Camera frame buffer too large');
+          if(buffered.length+value.length>16*1024*1024+8192)throw new Error('Camera frame buffer too large');
           const combined=new Uint8Array(buffered.length+value.length);combined.set(buffered);combined.set(value,buffered.length);buffered=combined;
           while(true){
             if(length===null){
@@ -49,7 +49,7 @@ class CameraFeed {
               const header=new TextDecoder().decode(buffered.subarray(0,end));
               const match=header.match(/(?:^|\r\n)Content-Length:\s*(\d+)\s*(?:\r\n|$)/i);
               length=match?Number(match[1]):0;
-              if(!Number.isInteger(length)||length<4||length>1024*1024)throw new Error('Invalid camera frame length');
+              if(!Number.isInteger(length)||length<4||length>16*1024*1024)throw new Error('Invalid camera frame length');
               buffered=buffered.slice(end+4);
             }
             if(buffered.length<length)break;
@@ -61,7 +61,7 @@ class CameraFeed {
             if(this.objectUrl)URL.revokeObjectURL(this.objectUrl);
             this.objectUrl=next;this.element.dataset.frameCount=String(Number(this.element.dataset.frameCount||0)+1);lastFrame=performance.now();delay=1000;this.report('live');
           }
-          if(buffered.length>1024*1024+8192)throw new Error('Camera frame buffer too large');
+          if(buffered.length>16*1024*1024+8192)throw new Error('Camera frame buffer too large');
         }
       }catch(error){
         if(!this.enabled||generation!==this.generation)return;
@@ -167,15 +167,16 @@ initJoints();
 let admin = null, plans = null, hardwareAdmin = null, cameraViews = null;
 function selectTab(name, updateHash = true) {
   const [mainName,sectionName]=name.split("/");name=mainName;
-  if (!['dashboard','plan','testing','admin'].includes(name)) name = 'dashboard';
+  if (!['dashboard','plan','testing','admin','apps'].includes(name)) name = 'dashboard';
   document.querySelectorAll('[data-tab]').forEach(tab=>{const active=tab.dataset.tab===name;tab.classList.toggle('active',active);if(active)tab.setAttribute('aria-current','page');else tab.removeAttribute('aria-current');});
   document.querySelectorAll('.tab-panel').forEach(panel=>panel.hidden=panel.id!==name);
-  document.querySelectorAll('.power-panel,.metrics').forEach(panel=>panel.hidden=name==='admin');
+  document.querySelectorAll('.power-panel,.metrics').forEach(panel=>panel.hidden=['admin','apps'].includes(name));
   document.body.classList.toggle('admin-active',name==='admin');
-  const titles={plan:['Make a plan. Keep control.','Save poses, arrange steps, and review each routine before running.'],dashboard:['A little closer to the ground.','See what your crawler sees. Keep every leg in view.'],testing:['Meet your crawler’s capabilities.','Explore the examples through the same MCP control layer.'],admin:['Robot administration.','Manage hardware, cameras, models, and connections.']};
+  const titles={plan:['Motion plans','Save poses, arrange steps, and review routines before running.'],dashboard:['Robot dashboard','Live cameras, sensors, and motion controls.'],testing:['Testing lab','Explore the crawler’s capabilities with hardware experiments.'],admin:['Administration','Configure the robot and its connected devices and services.'],apps:['Apps','Take the robot controls with you on Android and Windows.']};
   $('page-title').textContent=titles[name][0];$('page-description').textContent=titles[name][1];
   if(name==='testing')loadExamples();
-  if(name==='admin'){admin?.selectSection(sectionName||admin?.section||'hardware',false);admin?.refresh();if(admin?.section==='hardware')hardwareAdmin?.refresh();}
+  if(name==='admin'){admin?.selectSection(sectionName||admin?.section||'hardware',false);admin?.refresh();}
+  hardwareAdmin?.setActive(name==='admin'?admin?.section:null);
   if(name==='plan')plans?.refresh();
   if(updateHash)history.replaceState(null,'',name==='dashboard'?location.pathname:name==='admin'?'#admin/'+(admin?.section||'hardware'):'#'+name);
   cameraViews?.setActive(name==='admin'&&admin?.section==='cameras');
@@ -202,7 +203,7 @@ window.addEventListener('online',()=>refresh());
 function stopOnLeave(){ $('microphone-player').pause();if(!initialized||!(status.armed||status.microphone?.enabled||status.examples?.running||status.plan?.running))return;fetch('/mcp',{method:'POST',keepalive:true,headers:{'Content-Type':'application/json','Accept':'application/json, text/event-stream','MCP-Protocol-Version':'2025-03-26'},body:JSON.stringify({jsonrpc:'2.0',id:++rpcId,method:'tools/call',params:{name:'stop',arguments:{}}})}).catch(()=>{});notice('Motion stopped and audio muted when this page left the foreground.');}
 window.addEventListener('pagehide',stopOnLeave);document.addEventListener('visibilitychange',()=>{if(document.hidden)stopOnLeave();else refresh();});
 try{const {RobotView}=await import('./robot-view.js');model=new RobotView($('robot-view'));}catch(error){$('model-error').textContent=`3D rendering unavailable: ${error.message}`;$('model-error').hidden=false;}
-try{const {initAdmin}=await import('./admin.js');admin=initAdmin({call,notice,onConfigChanged:loadExamples,onSectionChange:name=>{if(name==='hardware')hardwareAdmin?.refresh();cameraViews?.setActive(name==='cameras'&&!$('admin').hidden);}});}catch(error){$('admin').textContent=`Admin unavailable: ${error.message}`;}
+try{const {initAdmin}=await import('./admin.js');admin=initAdmin({call,notice,onConfigChanged:loadExamples,onSectionChange:name=>{hardwareAdmin?.setActive(!$('admin').hidden?name:null);cameraViews?.setActive(name==='cameras'&&!$('admin').hidden);}});}catch(error){$('admin').textContent=`Admin unavailable: ${error.message}`;}
 try{const {initPlans}=await import('./plans.js');plans=initPlans({call,notice,getStatus:()=>connected?status:{}});}catch(error){$('plan').textContent=`Plans unavailable: ${error.message}`;}
 try{const {initHardware}=await import('./hardware-admin.js');hardwareAdmin=initHardware({call});}catch(error){console.error('Hardware inventory unavailable',error);}
 try{const {initCameraViews}=await import('./cameras-ui.js');cameraViews=initCameraViews({call,notice,CameraFeed,getStatus:()=>connected?status:{}});}catch(error){console.error('Camera settings unavailable',error);}

@@ -79,7 +79,7 @@ Protocol/hosting references: [official MCP Python SDK](https://github.com/modelc
 
 ## Admin: model providers and MCP connections
 
-Open the [Admin tab](https://spiderbot.tail689a35.ts.net/#admin/hardware). Settings are grouped into **Hardware**, **Cameras**, **Models**, **MCP connections**, **Playground**, and **System** subtabs. Each section has a direct `#admin/<section>` link and supports keyboard tab/arrow navigation. Admin hides dashboard telemetry to keep settings near the top; device options are collapsed under current hardware and expansion groups. The header arm/STOP controls stay available. Add an **Ollama** server with its origin (`http://your-server:11434`), or an **OpenAI-compatible** Chat Completions API base (`https://your-provider/v1`). Save, choose **Discover models**, select an exact installed model tag, then save the model. Discovery never pulls or downloads a model. Qwen is supported through Ollama; both Ollama native and its OpenAI-compatible endpoint have been tested against the provided server.
+Open the [Admin tab](https://spiderbot.tail689a35.ts.net/#admin/hardware). Settings are grouped into **Hardware**, **Cameras**, **Controllers**, **Models**, **MCP connections**, **Playground**, and **System** sections. A sidebar on desktop becomes a compact tab grid on smaller screens. Each section has a direct `#admin/<section>` link and supports keyboard tab/arrow navigation. Admin hides dashboard telemetry to keep settings near the top; device options are collapsed under current hardware and expansion groups. The header arm/STOP controls stay available. The appearance icon offers Auto (follow the device), Light, and Dark, with the choice saved in this browser. Apps has its own page in the top navigation; download cards are not repeated below settings. Add an **Ollama** server with its origin (`http://your-server:11434`), or an **OpenAI-compatible** Chat Completions API base (`https://your-provider/v1`). Save, choose **Discover models**, select an exact installed model tag, then save the model. Discovery never pulls or downloads a model. Qwen is supported through Ollama; both Ollama native and its OpenAI-compatible endpoint have been tested against the provided server.
 
 Choose separate testing and assistant defaults. The playground sends only the text you enter; camera/audio data is not included. Model jobs are bounded by the configured whole-job timeout, five model rounds, and eight tool calls, and can be cancelled. The language-model example becomes available after selecting the default testing provider.
 
@@ -199,26 +199,38 @@ using the deterministic parser/executor offline for simple routines.
 
 The dashboard shows the selected primary camera and additional CSI feeds at the
 same time. [Admin → Cameras](https://spiderbot.tail689a35.ts.net/#admin/cameras)
-provides independent start/stop, previews, snapshots, and primary selection.
+provides independent start/stop, previews, snapshots, resolution selection, and primary selection.
 Stable camera IDs derive from the physical libcamera sensor ID, rather than
-array order. This robot currently detects an IMX477 and an OV5647. Both start at
-640×480/12 fps; the OV5647 remains the initial primary for compatibility. Explicit
-primary selection persists in `cameras.json` (0600). A shared request dispatcher
+array order. This robot currently detects an IMX477 and an OV5647. New cameras start at
+640×480/12 fps; the OV5647 remains the initial primary for compatibility. Primary
+selection and per-camera resolutions persist in `cameras.json` (0600). A shared request dispatcher
 routes the process-wide libcamera completion queue to each camera, allowing
 simultaneous capture without one stream consuming the other's requests.
 
-MCP adds `camera_list`, `camera_select(camera_id)`, and optional `camera_id` on
+The resolution menu contains RGB output presets validated by libcamera, including
+320×240, 640×480, 1280×720, and full sensor output. On this robot the IMX477 exposes
+18 presets up to 4056×3040 and the OV5647 exposes 14 up to 2592×1944, both down to 160×120.
+Use **Apply** to restart only the chosen camera; a failed change restores the prior
+mode. Capture targets 12 fps through 720p, 8 fps through 1080p, 4 fps through 5 MP,
+and 2 fps above that to limit RGB copying and JPEG encoding. These are application
+capture targets, not maximum sensor frame rates. Actual JPEG dimensions are reported
+in status; changing output aspect ratio may change the field of view. Higher resolution
+uses more bandwidth. The web decoder supports JPEG frames up to 16 MiB.
+
+MCP adds `camera_list`, `camera_select(camera_id)`,
+`camera_configure(camera_id, width, height)`, and optional `camera_id` on
 `camera(enabled, camera_id)`. Each sensor has `/cameras/{id}/video.mjpg` and
 `/cameras/{id}/snapshot.jpg`. Existing `/video.mjpg`, `/snapshot.jpg`, vision tests,
-and recordings use the primary camera. Named streams remain pinned to their
+and recordings use the primary camera. A recording pins its starting camera, dimensions,
+and frame rate until completion; finish recording before resizing that camera. Named streams remain pinned to their
 sensor; the legacy video stream follows an explicit primary change. Existing
 Android/Windows clients continue using the primary feed. Camera status includes
 brightness and read-only exposure/gain metadata to help diagnose a covered lens
 or low light. Capture start is independent of microphone consent and arming.
 
-[Admin → Hardware](https://spiderbot.tail689a35.ts.net/#admin/hardware) recognizes
+[Admin → Controllers](https://spiderbot.tail689a35.ts.net/#admin/controllers) recognizes
 Linux USB joystick devices, shows their stable path and USB identity, and
-monitors axes/buttons live. The attached receiver identifies as `2563:0575`,
+monitors axes/buttons live while that section is visible. The attached receiver identifies as `2563:0575`,
 `USB WirelessGamepad` (ShanWan), with six axes and thirteen buttons. This is
 consistent with a PS2-style controller receiver; the USB identity does not prove
 the retail brand or that a wireless handset is paired. Move a stick or press a

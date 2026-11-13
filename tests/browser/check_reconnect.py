@@ -15,6 +15,11 @@ stream=io.BytesIO()
 Image.new('RGB',(4,4),(40,140,70)).save(stream,'JPEG')
 jpeg=stream.getvalue()
 packet=b'--frame\r\nContent-Type: image/jpeg\r\nContent-Length: '+str(len(jpeg)).encode()+b'\r\n\r\n'+jpeg+b'\r\n'
+large_stream=io.BytesIO()
+Image.effect_noise((1920,1440),100).convert('RGB').save(large_stream,'JPEG',quality=90)
+large_jpeg=large_stream.getvalue()
+assert len(large_jpeg)>1024*1024
+large_packet=b'--frame\r\nContent-Type: image/jpeg\r\nContent-Length: '+str(len(large_jpeg)).encode()+b'\r\n\r\n'+large_jpeg+b'\r\n'
 
 with sync_playwright() as p:
     browser=p.chromium.launch(executable_path='/usr/bin/chromium',headless=True,args=['--no-sandbox'])
@@ -28,13 +33,13 @@ with sync_playwright() as p:
         // Deliberately split boundary, headers, and JPEG markers across chunks.
         return new Response(new ReadableStream({start(controller){
           let offset=0;for(let n=1;offset<bytes.length;n++){
-            const size=[1,2,3,7,13][n%5];controller.enqueue(bytes.slice(offset,offset+size));offset+=size;
+            const size=offset<100?[1,2,3,7,13][n%5]:65536;controller.enqueue(bytes.slice(offset,offset+size));offset+=size;
           }controller.close();
         }}),{status:response.status,headers:response.headers});
       };
     ''')
     errors=[];page.on('pageerror',lambda error:errors.append(str(error)))
-    calls=[];state={'instance':'first','outage':False,'streams':0,'bad_stream':False}
+    calls=[];state={'instance':'first','outage':False,'streams':0,'bad_stream':False,'large':False}
     def route(request):
         path=request.request.url.split('robot.test',1)[-1].split('?',1)[0]
         if path=='/mcp':
@@ -58,7 +63,7 @@ with sync_playwright() as p:
             request.fulfill(content_type='application/json',body=json.dumps({'jsonrpc':'2.0','id':data.get('id'),'result':result}))
         elif path=='/video.mjpg':
             state['streams']+=1
-            body=(b'--frame\r\nContent-Length: 999999999\r\n\r\n' if state['bad_stream'] else packet)
+            body=(b'--frame\r\nContent-Length: 999999999\r\n\r\n' if state['bad_stream'] else large_packet if state['large'] else packet)
             # A valid frame followed by clean EOF simulates a closed server stream
             # while all telemetry polls keep succeeding.
             request.fulfill(content_type='multipart/x-mixed-replace; boundary=frame',body=body)
@@ -80,6 +85,11 @@ with sync_playwright() as p:
     initial=state['streams'];state['instance']='second'
     page.wait_for_timeout(700)
     assert state['streams']>initial,'Server instance change did not refresh video'
+    # Native-size sensor frames can exceed 1 MiB; render them without losing
+    # the bounded parser or its handling of fragmented headers and bodies.
+    state['large']=True;state['instance']='large-frame'
+    page.wait_for_function("document.querySelector('#camera-feed').naturalWidth===1920")
+    state['large']=False
     # Reject impossible frame sizes; do not display arbitrary payloads or spin.
     state['bad_stream']=True
     page.evaluate("window.dispatchEvent(new Event('offline'))")

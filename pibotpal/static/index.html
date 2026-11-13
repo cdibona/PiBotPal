@@ -2,21 +2,29 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="theme-color" content="#0c1217"><meta name="color-scheme" content="dark">
+  <meta name="theme-color" content="#0c1217"><meta name="color-scheme" content="light dark">
   <title>PiBotPal · Crawler control</title>
   <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/styles.css">
+  <link rel="stylesheet" href="/static/admin-layout.css">
+  <link rel="stylesheet" href="/static/cameras.css">
+  <link rel="stylesheet" href="/static/shell.css">
+  <script src="/static/theme.js"></script>
 </head>
 <body>
   <header class="topbar">
     <a class="brand" href="/" aria-label="PiBotPal home"><svg viewBox="0 0 40 40" aria-hidden="true"><path d="M12 14 5 9 2 17m26-3 7-5 3 8M12 26 5 31 2 23m26 3 7 5 3-8"/><rect x="11" y="11" width="18" height="18" rx="5"/><circle cx="17" cy="18" r="1"/><circle cx="23" cy="18" r="1"/></svg><span>PiBotPal<small>CRAWLER CONTROL</small></span></a>
-    <nav aria-label="Primary"><button class="tab active" data-tab="dashboard" aria-current="page">Dashboard</button><button class="tab" data-tab="plan">Plan</button><button class="tab" data-tab="testing">Testing lab <span id="example-count"></span></button><button class="tab" data-tab="admin">Admin</button><a class="tab apps-nav" href="#apps">Apps ↓</a></nav>
+    <nav aria-label="Primary"><button class="tab active" data-tab="dashboard" aria-current="page">Dashboard</button><button class="tab" data-tab="plan">Plan</button><button class="tab" data-tab="testing">Testing <span id="example-count"></span></button><button class="tab" data-tab="admin">Admin</button><button class="tab" data-tab="apps">Apps</button></nav>
     <div class="connection"><i id="connection-dot"></i><span id="connection-text">Connecting</span></div>
+    <div class="theme-picker">
+      <button id="theme-toggle" class="theme-toggle" type="button" aria-label="Appearance: Auto" title="Appearance: Auto" aria-haspopup="menu" aria-expanded="false" aria-controls="theme-menu"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16z" fill="currentColor"/></svg></button>
+      <div id="theme-menu" class="theme-menu" role="menu" aria-label="Appearance" hidden><span class="theme-menu-label">Appearance</span><button type="button" role="menuitemradio" aria-checked="true" data-theme-choice="auto" aria-label="Auto">Auto <small>Follow device</small></button><button type="button" role="menuitemradio" aria-checked="false" data-theme-choice="light" aria-label="Light">Light</button><button type="button" role="menuitemradio" aria-checked="false" data-theme-choice="dark" aria-label="Dark">Dark</button></div>
+    </div>
     <div class="arm-box"><span id="arm-label">Motion disarmed</span><button id="arm" class="outline">Arm motion</button></div>
     <button id="stop" class="danger"><span aria-hidden="true">■</span> STOP</button>
   </header>
   <main>
-    <div class="page-heading"><div><p class="eyebrow">SUNFOUNDER PICRAWLER / LIVE CONSOLE</p><h1 id="page-title">A little closer to the ground.</h1><p id="page-description">See what your crawler sees. Keep every leg in view.</p></div></div>
+    <div class="page-heading"><div><p class="eyebrow">SUNFOUNDER PICRAWLER / LIVE CONSOLE</p><h1 id="page-title">Robot dashboard</h1><p id="page-description">Live cameras, sensors, and motion controls.</p></div></div>
     <div id="notice" class="notice" role="status" aria-live="polite" hidden></div>
     <section class="power-panel" aria-label="Power and battery status">
       <div class="power-main"><div class="power-title"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 5 14h6l-1 8 9-13h-7z"/></svg><h2>Power</h2><span id="power-state" class="tag">CONNECTING</span></div><strong class="power-reading"><span id="power-voltage">—</span><em> V</em></strong><p id="power-detail">Waiting for measured supply voltage</p></div>
@@ -47,7 +55,7 @@
     <section id="testing" class="tab-panel" hidden><div class="test-intro"><div><h2>Small experiments. Real hardware.</h2><p>Reimplementations of the PiCrawler examples, with shared control and a stop button.</p></div><span id="test-summary" class="tag">Loading examples…</span></div><div id="test-running" class="notice" hidden></div><div id="examples" class="examples-grid"></div><article id="recordings-panel" class="panel" hidden><div class="panel-heading"><h2>Saved recordings</h2><span class="caption">Silent video · stored on this Pi</span></div><div id="recordings-list" class="panel-body"></div></article><article class="panel"><div class="panel-heading"><h2>Test output</h2><button id="clear-log" class="subtle">Clear</button></div><pre id="test-output" aria-live="polite">Select an experiment to begin.</pre></article></section>
     <section id="plan" class="tab-panel" hidden></section>
     <section id="admin" class="tab-panel" hidden></section>
-    <section id="apps" class="panel apps-panel" aria-labelledby="apps-title">
+    <section id="apps" class="tab-panel panel apps-panel" aria-labelledby="apps-title" hidden>
       <div class="panel-heading"><h2 id="apps-title">PiBotPal apps</h2><a class="text-link" href="https://github.com/cdibona/PiBotPal/blob/main/clients/README.md" target="_blank" rel="noopener">Setup guide ↗</a></div>
       <div class="panel-body apps-content">
         <div><p>Control the crawler and watch its camera from your phone or PC.</p><p class="caption">Connect Tailscale on your device, then enter this robot’s website address in the app.</p></div>
@@ -58,7 +66,7 @@
         <p class="caption">Android may ask to allow installation from your browser. The Windows app is unsigned. <a class="text-link" href="/downloads/build.json">Build details &amp; checksums</a></p>
       </div>
     </section>
-    <footer><span>PiBotPal <span class="footer-divider">/</span> Web → MCP → Robot HAT</span><span id="battery" title="Battery supply voltage reported by Robot HAT">Battery —</span><span id="last-updated">Waiting for telemetry</span><span>Private access through Tailscale</span></footer>
+    <footer><span class="footer-brand">PiBotPal <span class="footer-divider">/</span> Robot console</span><span id="battery" title="Battery supply voltage reported by Robot HAT">Battery —</span><span id="last-updated">Waiting for telemetry</span><span>Private access through Tailscale</span></footer>
   </main>
   <script type="module" src="/static/app.js"></script>
 </body></html>

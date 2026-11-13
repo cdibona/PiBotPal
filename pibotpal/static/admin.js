@@ -9,7 +9,7 @@ const ROBOT_TOOLS = [
   ['speak', 'Use the speaker', 'Plays speech on the robot'],
 ];
 const markup = `
-  <div class="admin-intro"><div><p class="eyebrow">CONNECTIONS & DEFAULTS</p><h2>Give your crawler a model to work with.</h2><p>Connect Ollama, an OpenAI-compatible provider, and the MCP tools you want to make available.</p></div><button id="admin-refresh" class="outline">Refresh settings</button></div>
+  <div class="admin-toolbar"><button id="admin-refresh" class="outline">Refresh settings</button></div>
   <div id="admin-notice" class="notice" role="status" aria-live="polite" hidden></div>
   <div class="admin-grid">
     <article class="panel admin-provider-panel">
@@ -77,38 +77,60 @@ const markup = `
 
 export function initAdmin({call, notice, onConfigChanged, onSectionChange}) {
   $('admin').innerHTML = markup;
-  const intro=$('admin').querySelector('.admin-intro');
-  intro.querySelector('.eyebrow').textContent='ROBOT SETTINGS';
-  intro.querySelector('h2').textContent='Everything in its place.';
-  intro.querySelector('p:last-child').textContent='Manage hardware, cameras, model providers, and connections from separate sections.';
-  const sections=[['hardware','Hardware'],['cameras','Cameras'],['models','Models'],['mcp','MCP connections'],['playground','Playground'],['system','System']];
+  const toolbar=$('admin').querySelector('.admin-toolbar');
+  const sections=[['hardware','Hardware'],['cameras','Cameras'],['controllers','Controllers'],['models','Models'],['mcp','MCP connections'],['playground','Playground'],['system','System']];
   const navigation=document.createElement('div');navigation.className='admin-subtabs';navigation.setAttribute('role','tablist');navigation.setAttribute('aria-label','Admin sections');
+  const wideNavigation=window.matchMedia('(min-width: 1100px)');
+  const orientNavigation=()=>navigation.setAttribute('aria-orientation',wideNavigation.matches?'vertical':'horizontal');
+  orientNavigation();wideNavigation.addEventListener('change',orientNavigation);
   const panels=new Map();
   for(const [id,title] of sections){
     const button=document.createElement('button');button.type='button';button.id='admin-tab-'+id;button.textContent=title;button.dataset.adminSection=id;button.setAttribute('role','tab');button.setAttribute('aria-controls','admin-'+id);
     const panel=document.createElement('section');panel.id='admin-'+id;panel.className='admin-subpanel';panel.setAttribute('role','tabpanel');panel.setAttribute('aria-labelledby',button.id);panel.hidden=true;
     navigation.append(button);panels.set(id,panel);
   }
-  intro.after(navigation);
+  toolbar.before(navigation);
+  const sectionIntros=new Map();
+  for(const [id,title,description] of [
+    ['models','Models & providers','Connect model servers and choose the defaults used by tests and the assistant.'],
+    ['mcp','MCP connections','Connect external tool servers and choose which tools the assistant may use.'],
+    ['playground','Model playground','Try a prompt, review the response, and inspect any tool activity.'],
+    ['system','System & access','Connect other clients to this robot and review how access is managed.'],
+  ]){
+    const intro=document.createElement('div');intro.className='admin-intro admin-section-intro';
+    const text=document.createElement('div');const heading=document.createElement('h2');heading.textContent=title;
+    const detail=document.createElement('p');detail.textContent=description;text.append(heading,detail);intro.append(text);
+    panels.get(id).append(intro);sectionIntros.set(id,intro);
+  }
   const modelGrid=$('admin').querySelector('.admin-grid');panels.get('models').append(modelGrid);
   panels.get('mcp').append($('admin').querySelector('.admin-mcp-panel'));
   const bottom=$('admin').querySelector('.admin-bottom-grid');
   panels.get('playground').append(bottom.querySelector('.admin-playground'));
   panels.get('system').append(bottom.querySelector('.admin-server-panel'));bottom.remove();
-  for(const panel of panels.values())$('admin').append(panel);
+  const layout=document.createElement('div');layout.className='admin-layout';
+  const content=document.createElement('div');content.className='admin-content';
+  for(const panel of panels.values())content.append(panel);
+  content.prepend($('admin-notice'));layout.append(navigation,content);$('admin').append(layout);
   let activeSection='hardware';
   function selectSection(name='hardware',updateHash=true){
-    if(!panels.has(name))name='hardware';activeSection=name;
+    if(!panels.has(name))name='hardware';
+    if(name!==activeSection){
+      $('admin-notice').textContent='';$('admin-notice').hidden=true;$('admin-notice').className='notice';
+    }
+    activeSection=name;
     for(const button of navigation.querySelectorAll('[role="tab"]')){const selected=button.dataset.adminSection===name;button.setAttribute('aria-selected',String(selected));button.tabIndex=selected?0:-1;button.classList.toggle('active',selected);}
     for(const [id,panel] of panels)panel.hidden=id!==name;
+    const intro=sectionIntros.get(name);toolbar.hidden=!intro;if(intro)intro.append(toolbar);
     if(updateHash)history.replaceState(null,'','#admin/'+name);
     onSectionChange?.(name);
   }
   navigation.addEventListener('click',event=>{const button=event.target.closest('[data-admin-section]');if(button)selectSection(button.dataset.adminSection);});
   navigation.addEventListener('keydown',event=>{
-    if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;
+    const previous=wideNavigation.matches?'ArrowUp':'ArrowLeft';
+    const next=wideNavigation.matches?'ArrowDown':'ArrowRight';
+    if(![previous,next,'Home','End'].includes(event.key))return;
     const tabs=[...navigation.querySelectorAll('[role="tab"]')];let index=tabs.indexOf(document.activeElement);if(index<0)return;
-    event.preventDefault();index=event.key==='Home'?0:event.key==='End'?tabs.length-1:(index+(event.key==='ArrowRight'?1:-1)+tabs.length)%tabs.length;
+    event.preventDefault();index=event.key==='Home'?0:event.key==='End'?tabs.length-1:(index+(event.key===next?1:-1)+tabs.length)%tabs.length;
     selectSection(tabs[index].dataset.adminSection);tabs[index].focus();
   });
   selectSection('hardware',false);

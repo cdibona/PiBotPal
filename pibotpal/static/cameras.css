@@ -1,0 +1,25 @@
+/* SPDX-License-Identifier: MIT */
+.camera-stream-note{max-width:80ch;margin:-8px 0 20px;font-size:13px}
+.camera-card-title{display:flex;flex-direction:column;gap:3px;min-width:0}
+.camera-card-title h3{font-size:16px;overflow-wrap:anywhere}
+.camera-card-title .caption{font-size:12px;text-align:left}
+.csi-camera-card .panel-body{gap:16px}
+.csi-camera-stage{max-height:480px}
+.csi-camera-stage img{position:absolute;inset:0}
+.csi-camera-stage p{font-size:13px;color:#aebdc5}
+.camera-stream-detail{font-size:13px;color:var(--muted)}
+.camera-resolution-form{display:grid;grid-template-columns:minmax(0,1fr) auto;align-items:end;gap:10px 12px;padding:16px;border:1px solid var(--line);border-radius:8px;background:var(--panel-2)}
+.camera-resolution-field{display:flex;flex-direction:column;gap:7px;font-size:13px;color:var(--text)}
+.camera-resolution-select{font-size:14px}
+.camera-resolution-form>button{min-height:41px}
+.camera-resolution-hint,.camera-resolution-status{grid-column:1/-1;font-size:12px;line-height:1.6}
+.camera-resolution-status{color:var(--teal)}
+.camera-resolution-status.error{color:var(--red)}
+.camera-actions{gap:10px}
+.camera-actions .text-link{font-size:13px;margin-left:auto}
+.camera-actions a[aria-disabled=true]{opacity:.45}
+.capture-diagnostics{border-top:1px solid var(--line);padding-top:12px}
+.capture-diagnostics summary{font-size:13px}
+.capture-diagnostics .camera-hardware-id{margin-top:12px;font-size:11px!important}
+.capture-diagnostics pre{font-size:12px}
+@media(max-width:420px){.camera-resolution-form{padding:12px;gap:9px}.camera-resolution-select{font-size:13px}.camera-actions .text-link{flex-basis:100%;margin-left:0}.csi-camera-card .panel-body{padding:15px}.camera-card-title .caption{font-size:11px}}
