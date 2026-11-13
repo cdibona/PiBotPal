@@ -487,7 +487,6 @@ textarea{font:11px monospace;background:var(--input);color:var(--text);border:1p
 
 /* Keep the motion latch and arm control beside the persistent stop button. */
 .topbar>.arm-box{flex-direction:column;align-items:center;gap:5px;flex-shrink:0;font-size:10px}
-.topbar #arm-label{white-space:nowrap}
 .topbar #arm{font-size:11px;padding:8px 12px}
 
 @media(min-width:781px) and (max-width:1200px){.topbar{flex-wrap:wrap;column-gap:20px;row-gap:0;padding-top:12px}
