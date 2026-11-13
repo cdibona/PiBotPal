@@ -33,6 +33,7 @@ class Media:
         self._cameras = {}
         self._camera_inventory_loaded = False
         self._primary_camera_id = None
+        self._camera_preferences = {}
         self._camera_settings = self.root / 'cameras.json'
         if self._camera_settings.exists():
             try:
@@ -41,6 +42,15 @@ class Media:
                 if settings.get('version') != 1 or not isinstance(primary, str) or not primary.startswith('csi-') or len(primary) != 16:
                     raise ValueError('Invalid primary camera settings')
                 self._primary_camera_id = primary
+                preferences = settings.get('resolutions', {})
+                if not isinstance(preferences, dict):
+                    raise ValueError('Invalid camera resolutions')
+                for identifier, size in preferences.items():
+                    if (not isinstance(identifier, str) or not identifier.startswith('csi-') or len(identifier) != 16
+                            or not isinstance(size, dict) or set(size) != {'width', 'height'}
+                            or any(type(size[key]) is not int or not 1 <= size[key] <= 16384 for key in size)):
+                        raise ValueError('Invalid camera resolution')
+                self._camera_preferences = preferences
                 os.chmod(self._camera_settings, 0o600)
             except Exception as exc:
                 raise RuntimeError('Camera settings could not be read; repair cameras.json') from exc
@@ -54,6 +64,7 @@ class Media:
         self._record_stop = threading.Event()
         self._record_thread = None
         self._record_error = None
+        self._record_camera_id = None
         self._mic_device = os.environ.get('PIBOTPAL_MIC_DEVICE', 'plughw:CARD=Device,DEV=0')
         self._speaker_device = os.environ.get('PIBOTPAL_SPEAKER_DEVICE', 'default')
 
@@ -62,6 +73,10 @@ class Media:
         return self._primary_camera_id
 
     def _discover_cameras(self):
+        # Telemetry must remain responsive while another thread reconfigures a
+        # camera (which holds _camera_operations while waiting for a frame).
+        if self._camera_inventory_loaded or self.simulate:
+            return
         with self._camera_operations:
             if self._camera_inventory_loaded or self.simulate:
                 return
@@ -71,9 +86,16 @@ class Media:
                 with self._lock:
                     for item in inventory:
                         if item['id'] not in self._cameras:
+                            from .camera import stream_frame_rate
+                            resolutions = item.get('resolutions') or [{'width': 640, 'height': 480, 'frame_rate': 12}]
+                            preferred = self._camera_preferences.get(item['id'], {'width': 640, 'height': 480})
+                            mode = next((size for size in resolutions if (size['width'], size['height']) == (preferred['width'], preferred['height'])), None)
+                            mode = mode or next((size for size in resolutions if (size['width'], size['height']) == (640, 480)), resolutions[0])
                             self._cameras[item['id']] = {**item, 'thread': None, 'stop': threading.Event(),
                                 'frame': None, 'jpeg': None, 'timestamp': None, 'error': None,
-                                'capture_metadata': {}, 'brightness': None}
+                                'capture_metadata': {}, 'brightness': None, 'ready': threading.Event(),
+                                'resolutions': resolutions, 'width': mode['width'], 'height': mode['height'],
+                                'frame_rate': stream_frame_rate(mode['width'], mode['height'])}
                     if self._primary_camera_id not in self._cameras:
                         preferred = next((c['id'] for c in inventory if c['model'].lower() == 'ov5647'), None)
                         self._primary_camera_id = preferred or (inventory[0]['id'] if inventory else None)
@@ -90,7 +112,11 @@ class Media:
             'label': f"{slot['model'].upper()} · CSI {slot['index']}",
             'enabled': bool(thread and thread.is_alive() and not slot['stop'].is_set()),
             'available': slot['jpeg'] is not None and time.time() - (stamp or 0) <= 3,
-            'error': slot['error'], 'timestamp': stamp, 'width': 640, 'height': 480,
+            'error': slot['error'], 'timestamp': stamp,
+            'width': slot.get('width', 640), 'height': slot.get('height', 480),
+            'frame_rate': slot.get('frame_rate', 12),
+            'resolutions': [dict(mode) for mode in slot.get('resolutions', [])],
+            'sensor_resolution': dict(slot.get('sensor_resolution', {})),
             'capture_metadata': dict(slot.get('capture_metadata', {})),
             'brightness': slot.get('brightness'),
             'primary': slot['id'] == self._primary_camera_id,
@@ -102,20 +128,23 @@ class Media:
         with self._lock:
             return [self._camera_status(slot) for slot in self._cameras.values()]
 
+    def _save_camera_settings(self, primary, preferences):
+        fd, filename = tempfile.mkstemp(prefix='.cameras-', dir=self.root)
+        try:
+            with os.fdopen(fd, 'w') as out:
+                os.fchmod(out.fileno(), 0o600)
+                json.dump({'version': 1, 'primary_camera_id': primary, 'resolutions': preferences}, out)
+                out.flush(); os.fsync(out.fileno())
+            os.replace(filename, self._camera_settings)
+        finally:
+            if os.path.exists(filename): os.unlink(filename)
+
     def select_primary(self, camera_id):
         self._discover_cameras()
-        with self._lock:
+        with self._camera_operations, self._lock:
             if camera_id not in self._cameras:
                 raise ValueError('Unknown CSI camera')
-            fd, filename = tempfile.mkstemp(prefix='.cameras-', dir=self.root)
-            try:
-                with os.fdopen(fd, 'w') as out:
-                    os.fchmod(out.fileno(), 0o600)
-                    json.dump({'version': 1, 'primary_camera_id': camera_id}, out)
-                    out.flush(); os.fsync(out.fileno())
-                os.replace(filename, self._camera_settings)
-            finally:
-                if os.path.exists(filename): os.unlink(filename)
+            self._save_camera_settings(camera_id, self._camera_preferences)
             self._primary_camera_id = camera_id
             self._sync_primary(self._cameras[camera_id])
             return self._camera_status(self._cameras[camera_id])
@@ -179,6 +208,7 @@ class Media:
                         return self._camera_status(slot)
                     slot['stop'].clear()
                     slot['error'] = None
+                    slot.setdefault('ready', threading.Event()).clear()
                     slot['thread'] = threading.Thread(target=self._capture, args=(slot,), daemon=True,
                                                       name='camera-' + camera_id)
                     self._sync_primary(slot)
@@ -186,10 +216,69 @@ class Media:
                     return self._camera_status(slot)
                 slot['stop'].set()
             if thread:
-                thread.join(timeout=4)
+                thread.join(timeout=5)
+                if thread.is_alive():
+                    raise RuntimeError('Camera is still stopping; try again after capture finishes')
             with self._lock:
                 slot['frame'] = slot['jpeg'] = None
                 self._sync_primary(slot)
+                return self._camera_status(slot)
+
+    def _wait_camera(self, slot):
+        if not slot['ready'].wait(timeout=8):
+            raise RuntimeError('Camera did not produce a frame in time')
+        with self._lock:
+            if slot['jpeg'] is None or slot['error']:
+                raise RuntimeError(slot['error'] or 'Camera stopped before producing a frame')
+
+    def configure_camera(self, camera_id, width, height):
+        """Apply one advertised resolution, restoring the previous mode on failure."""
+        if type(width) is not int or type(height) is not int:
+            raise ValueError('Camera width and height must be integers')
+        self._discover_cameras()
+        with self._camera_operations:
+            with self._lock:
+                slot = self._cameras.get(camera_id)
+                if slot is None:
+                    raise ValueError('Unknown CSI camera')
+                mode = next((size for size in slot.get('resolutions', []) if (size['width'], size['height']) == (width, height)), None)
+                if mode is None:
+                    raise ValueError('Resolution is not supported by this camera; use camera_list to select a supported size')
+                if slot['thread'] and slot['thread'].is_alive() and slot['stop'].is_set():
+                    raise RuntimeError('Camera is still stopping; try again after capture finishes')
+                if self._record_thread and self._record_thread.is_alive() and self._record_camera_id == camera_id:
+                    raise RuntimeError('Finish the current recording before changing its camera resolution')
+                previous = {key: slot[key] for key in ('width', 'height', 'frame_rate')}
+                enabled = bool(slot['thread'] and slot['thread'].is_alive() and not slot['stop'].is_set())
+            # Joining happens outside the frame lock so capture can release its
+            # buffers before the same sensor is acquired again.
+            if enabled:
+                self.camera(False, camera_id)
+            try:
+                from .camera import stream_frame_rate
+                with self._lock:
+                    slot.update(width=width, height=height, frame_rate=stream_frame_rate(width, height))
+                if enabled:
+                    self.camera(True, camera_id)
+                    self._wait_camera(slot)
+                preferences = {**self._camera_preferences, camera_id: {'width': width, 'height': height}}
+                self._save_camera_settings(self._primary_camera_id, preferences)
+                self._camera_preferences = preferences
+            except Exception as exc:
+                recovery_error = None
+                try:
+                    if enabled:
+                        self.camera(False, camera_id)
+                    with self._lock:
+                        slot.update(previous)
+                    if enabled:
+                        self.camera(True, camera_id)
+                        self._wait_camera(slot)
+                except Exception as recovery:
+                    recovery_error = str(recovery)
+                detail = f' Previous mode could not restart: {recovery_error}' if recovery_error else ' Previous resolution restored.'
+                raise RuntimeError(f'Camera resolution could not be applied: {exc}.{detail}') from exc
+            with self._lock:
                 return self._camera_status(slot)
 
     def _capture(self, slot):
@@ -198,8 +287,8 @@ class Media:
             from PIL import Image
             from .camera import Camera
             cam = Camera(slot['id'])
-            cam.configure(cam.create_video_configuration(main={'size': (640, 480), 'format': 'RGB888'},
-                                                          controls={'FrameRate': 12}))
+            cam.configure(cam.create_video_configuration(main={'size': (slot['width'], slot['height']), 'format': 'RGB888'},
+                                                          controls={'FrameRate': slot['frame_rate']}))
             cam.start()
             while not slot['stop'].is_set():
                 frame = cam.capture_array('main')
@@ -210,6 +299,8 @@ class Media:
                     slot['timestamp'] = time.time()
                     slot['capture_metadata'] = dict(getattr(cam, 'last_metadata', {}))
                     slot['brightness'] = round(float(frame[::16, ::16].mean()), 2)
+                    slot['width'], slot['height'] = frame.shape[1], frame.shape[0]
+                    slot['ready'].set()
                     self._sync_primary(slot)
         except Exception as exc:
             with self._lock:
@@ -223,6 +314,7 @@ class Media:
                         slot['error'] = slot['error'] or str(exc)
             with self._lock:
                 slot['frame'] = slot['jpeg'] = None
+                slot['ready'].set()
                 self._sync_primary(slot)
 
     def jpeg(self, camera_id=None):
@@ -294,27 +386,31 @@ class Media:
     def record(self, seconds=10):
         if isinstance(seconds, bool) or not isinstance(seconds, (int, float)) or not math.isfinite(seconds) or not 1 <= seconds <= 30:
             raise ValueError('Recording duration must be 1–30 seconds')
-        self.jpeg()
-        with self._lock:
+        with self._camera_operations, self._lock:
+            self.jpeg()
             if self._record_thread and self._record_thread.is_alive():
                 raise RuntimeError('Already recording')
             if sum(p.stat().st_size for p in self.recordings.glob('*.avi')) > 1024**3:
                 raise RuntimeError('Recording storage reached 1 GiB; remove old recordings locally')
             self._record_stop.clear()
             self._record_error = None
+            self._record_camera_id = self._primary_camera_id
+            slot = self._cameras.get(self._record_camera_id, {})
+            width, height = slot.get('width', 640), slot.get('height', 480)
+            fps = min(10, slot.get('frame_rate', 12))
             name = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ.avi')
-            self._record_thread = threading.Thread(target=self._record, args=(name, seconds), daemon=True)
+            self._record_thread = threading.Thread(target=self._record, args=(name, seconds, self._record_camera_id, width, height, fps), daemon=True)
             self._record_thread.start()
         return {'name': name, 'url': '/recordings/' + name, 'seconds': seconds}
 
-    def _record(self, name, seconds):
+    def _record(self, name, seconds, camera_id=None, width=640, height=480, fps=10):
         writer = None
         try:
-            writer = MjpegAVI(self.recordings / name)
+            writer = MjpegAVI(self.recordings / name, width=width, height=height, fps=fps)
             deadline = time.monotonic() + seconds
             while time.monotonic() < deadline and not self._record_stop.is_set():
-                writer.write(self.jpeg())
-                self._record_stop.wait(0.1)
+                writer.write(self.jpeg(camera_id))
+                self._record_stop.wait(1 / fps)
         except Exception as exc:
             self._record_error = str(exc)
         finally:

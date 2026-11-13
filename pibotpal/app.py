@@ -198,13 +198,19 @@ def create_app(controller=None, media=None):
 
     @mcp.tool()
     async def camera_list() -> dict:
-        """List detected CSI sensors, independent stream URLs and primary selection."""
+        """List detected CSI sensors, supported output resolutions, independent streams and primary selection."""
         return {'cameras': await invoke(media.list_cameras), 'primary_camera_id': media.primary_camera_id}
 
     @mcp.tool()
     async def camera_select(camera_id: str) -> dict:
         """Persist which detected camera supplies legacy video, snapshots, vision tests and native clients."""
         await invoke(media.select_primary, camera_id)
+        return await camera_list()
+
+    @mcp.tool()
+    async def camera_configure(camera_id: str, width: int, height: int) -> dict:
+        """Persist an advertised camera resolution. Restarts only that stream, waits for a frame and restores its old mode if capture fails."""
+        await invoke(media.configure_camera, camera_id, width, height)
         return await camera_list()
 
     @mcp.tool()
@@ -485,13 +491,18 @@ def create_app(controller=None, media=None):
         except RuntimeError as exc:
             raise HTTPException(503, str(exc))
         async def frames():
+            previous = None
             while not await request.is_disconnected():
                 try:
                     jpeg = media.jpeg(selected)
                 except (RuntimeError, ValueError):
                     break
-                yield b'--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ' + str(len(jpeg)).encode() + b'\r\n\r\n' + jpeg + b'\r\n'
-                await asyncio.sleep(0.1)
+                if jpeg is not previous:
+                    yield b'--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ' + str(len(jpeg)).encode() + b'\r\n\r\n' + jpeg + b'\r\n'
+                    previous = jpeg
+                # High-resolution capture intentionally runs more slowly. Do
+                # not retransmit the same large JPEG ten times per second.
+                await asyncio.sleep(0.05)
         return StreamingResponse(frames(), media_type='multipart/x-mixed-replace; boundary=frame')
 
     @app.get('/video.mjpg')

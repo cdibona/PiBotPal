@@ -30,6 +30,50 @@ def camera_identifier(hardware_id):
     return 'csi-' + hashlib.sha256(hardware_id.encode()).hexdigest()[:12]
 
 
+def stream_frame_rate(width, height):
+    """Bound RGB copying/JPEG work while allowing full sensor resolution."""
+    pixels = width * height
+    return 12 if pixels <= 1280 * 720 else 8 if pixels <= 1920 * 1080 else 4 if pixels <= 2592 * 1944 else 2
+
+
+def camera_capabilities(device, api):
+    """Validate useful RGB output sizes without acquiring the sensor.
+
+    These are ISP output resolutions, not claims about raw sensor readout modes
+    or maximum sensor FPS. libcamera may silently adjust a configuration, so
+    only unchanged sizes and RGB888 are advertised. Never upscale above its
+    recommended native output limit.
+    """
+    cfg = device.generate_configuration([api.StreamRole.Viewfinder])
+    stream = cfg.at(0)
+    pixel_format = api.PixelFormat('RGB888')
+    size_range = stream.formats.range(pixel_format)
+    maximum = size_range.max
+    candidates = {(160, 120), (320, 240), (640, 360), (640, 480), (800, 600),
+                  (1024, 768), (1280, 720), (1280, 960), (1600, 1200),
+                  (1920, 1080), (2048, 1536), (2560, 1440), (3840, 2160),
+                  (maximum.width, maximum.height)}
+    raw = device.generate_configuration([api.StreamRole.Raw])
+    if raw is not None:
+        raw_stream = raw.at(0)
+        for raw_format in raw_stream.formats.pixel_formats:
+            candidates.update((size.width, size.height) for size in raw_stream.formats.sizes(raw_format))
+    resolutions = []
+    for width, height in sorted(candidates, key=lambda size: (size[0] * size[1], size)):
+        if not size_range.contains(api.Size(width, height)):
+            continue
+        stream.size = api.Size(width, height)
+        stream.pixel_format = pixel_format
+        stream.buffer_count = 3
+        result = cfg.validate()
+        if result == api.CameraConfiguration.Status.Invalid:
+            continue
+        if (stream.size.width, stream.size.height) == (width, height) and str(stream.pixel_format) == 'RGB888':
+            resolutions.append({'width': width, 'height': height, 'frame_rate': stream_frame_rate(width, height)})
+    return {'resolutions': resolutions,
+            'sensor_resolution': {'width': maximum.width, 'height': maximum.height}}
+
+
 class RequestRouter:
     """Route each request cookie to its owner; no frame memory is copied here."""
     def __init__(self, manager):
@@ -55,7 +99,7 @@ class RequestRouter:
             for request in requests:
                 destination = self._owners.get(request.cookie)
                 if destination is not None:
-                    # Four buffers per camera bound the number of outstanding
+                    # Three buffers per camera bound the number of outstanding
                     # completions. A request is requeued only after consumption.
                     destination.put(request)
 
@@ -100,7 +144,7 @@ def list_cameras():
         result.append({'id': camera_identifier(device.id), 'hardware_id': device.id,
                        'index': index, 'model': str(properties.get(libcamera.properties.Model, 'CSI camera')),
                        'sensor_rotation': int(properties.get(libcamera.properties.Rotation, 0)),
-                       'connection': 'csi'})
+                       'connection': 'csi', **camera_capabilities(device, libcamera)})
     return result
 
 
@@ -134,9 +178,9 @@ class Camera:
         width, height = options['main']['size']
         stream.size = self.api.Size(width, height)
         stream.pixel_format = self.api.PixelFormat('RGB888')
-        stream.buffer_count = 4
-        cfg.validate()
-        if str(stream.pixel_format) != 'RGB888' or (stream.size.width, stream.size.height) != (width, height):
+        stream.buffer_count = 3
+        validity = cfg.validate()
+        if validity == self.api.CameraConfiguration.Status.Invalid or str(stream.pixel_format) != 'RGB888' or (stream.size.width, stream.size.height) != (width, height):
             raise RuntimeError('Camera cannot supply the requested RGB stream')
         self.device.configure(cfg)
         self.configuration = cfg

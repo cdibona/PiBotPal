@@ -179,6 +179,7 @@ def test_camera_catalog_and_controller_monitor_are_read_only_in_simulation(clien
     assert client.get('/cameras/not-a-camera/snapshot.jpg').status_code==404
     assert client.get('/cameras/not-a-camera/video.mjpg').status_code==404
     assert call(client,'camera_select',camera_id='not-a-camera')['isError']
+    assert call(client,'camera_configure',camera_id='not-a-camera',width=640,height=480)['isError']
     assert call(client,'get_status')['structuredContent']['servo_angles']==[None]*12
 
 
@@ -202,6 +203,30 @@ def test_distinct_camera_snapshots_and_persisted_primary_selection(client,tmp_pa
     assert (tmp_path/'cameras.json').stat().st_mode & 0o777==0o600
 
 
+def test_mcp_resolution_configuration_preserves_disarmed_and_muted_state(client, tmp_path):
+    import threading
+    media = client.app.state.media
+    identifier = 'csi-aaaaaaaaaaaa'
+    media._cameras[identifier] = {'id': identifier, 'hardware_id': '/sensor/mock',
+        'index': 0, 'model': 'mock', 'sensor_rotation': 0, 'connection': 'csi',
+        'thread': None, 'stop': threading.Event(), 'frame': None, 'jpeg': None,
+        'timestamp': None, 'error': None, 'width': 640, 'height': 480, 'frame_rate': 12,
+        'resolutions': [{'width': 640, 'height': 480, 'frame_rate': 12},
+                        {'width': 1280, 'height': 720, 'frame_rate': 12}]}
+    media._primary_camera_id = identifier
+    result = call(client, 'camera_configure', camera_id=identifier, width=1280, height=720)
+    assert not result.get('isError')
+    camera = result['structuredContent']['cameras'][0]
+    assert (camera['width'], camera['height']) == (1280, 720)
+    assert not camera['enabled'] and not camera['available']
+    assert call(client, 'camera_configure', camera_id=identifier, width=8000, height=8000)['isError']
+    state = call(client, 'get_status')['structuredContent']
+    assert not state['armed'] and state['microphone']['muted']
+    assert state['servo_angles'] == [None] * 12
+    saved = json.loads((tmp_path / 'cameras.json').read_text())
+    assert saved['resolutions'][identifier] == {'width': 1280, 'height': 720}
+
+
 def test_open_legacy_video_follows_primary_but_named_stream_is_pinned(client, monkeypatch):
     import asyncio
     media=client.app.state.media
@@ -221,4 +246,27 @@ def test_open_legacy_video_follows_primary_but_named_stream_is_pinned(client, mo
         pinned=await named('csi-aaaaaaaaaaaa',Request())
         assert (await anext(pinned.body_iterator)).endswith(b'first\r\n')
         await pinned.body_iterator.aclose()
+    asyncio.run(check())
+
+
+def test_video_does_not_retransmit_unchanged_high_resolution_frames(client, monkeypatch):
+    import asyncio
+    media = client.app.state.media
+    current = [b'first-frame']
+    monkeypatch.setattr(media, 'jpeg', lambda camera_id=None: current[0])
+    class Request:
+        polls = 0
+        async def is_disconnected(self):
+            self.polls += 1
+            if self.polls == 4:
+                current[0] = b'next-frame'
+            return False
+    request = Request()
+    route = next(r.endpoint for r in client.app.routes if getattr(r, 'path', None) == '/video.mjpg')
+    async def check():
+        response = await route(request)
+        assert (await anext(response.body_iterator)).endswith(b'first-frame\r\n')
+        assert (await anext(response.body_iterator)).endswith(b'next-frame\r\n')
+        assert request.polls == 4
+        await response.body_iterator.aclose()
     asyncio.run(check())
