@@ -96,6 +96,10 @@ public sealed class McpClient : IDisposable
 
 public sealed class MjpegReader(Stream stream)
 {
+    // Full-resolution CSI images can exceed 1 MiB. Keep an independent,
+    // bounded video limit; JSON MCP responses retain their smaller limit.
+    private const int MaxFrameBytes = 16 * 1024 * 1024;
+
     public async Task<byte[]?> NextFrameAsync(CancellationToken token)
     {
         int? length = null;
@@ -106,7 +110,7 @@ public sealed class MjpegReader(Stream stream)
             if (line.StartsWith("Content-Length:", StringComparison.OrdinalIgnoreCase) && int.TryParse(line[15..].Trim(), out var parsed)) length = parsed;
             if (line.Length == 0 && length.HasValue)
             {
-                if (length.Value < 4 || length.Value > 1024 * 1024) throw new InvalidDataException("Invalid MJPEG frame size");
+                if (length.Value < 4 || length.Value > MaxFrameBytes) throw new InvalidDataException("Invalid MJPEG frame size");
                 var frame = new byte[length.Value];
                 await stream.ReadExactlyAsync(frame, token);
                 if (frame[0] != 0xff || frame[1] != 0xd8) throw new InvalidDataException("Invalid JPEG frame");

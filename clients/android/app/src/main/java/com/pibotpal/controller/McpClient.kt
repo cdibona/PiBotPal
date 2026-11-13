@@ -103,6 +103,12 @@ private fun java.io.InputStream.readBytesLimited(limit: Int): ByteArray {
 
 /** Multipart reader for /video.mjpg. A maximum frame size prevents unbounded allocation. */
 class MjpegReader(private val input: BufferedInputStream) {
+    private companion object {
+        // Independent of the smaller JSON MCP limit: native CSI JPEGs can
+        // exceed 1 MiB, while a fixed ceiling still bounds allocation.
+        const val MAX_FRAME_BYTES = 16 * 1024 * 1024
+    }
+
     fun nextFrame(): ByteArray? {
         var length: Int? = null
         var lines = 0
@@ -113,7 +119,7 @@ class MjpegReader(private val input: BufferedInputStream) {
             if (line.isEmpty() && length != null) break
         }
         val size = length ?: throw IllegalStateException("MJPEG Content-Length missing")
-        require(size in 4..1024 * 1024) { "Invalid JPEG frame size" }
+        require(size in 4..MAX_FRAME_BYTES) { "Invalid JPEG frame size" }
         val bytes = ByteArray(size)
         var offset = 0
         while (offset < size) {
