@@ -200,3 +200,25 @@ def test_distinct_camera_snapshots_and_persisted_primary_selection(client,tmp_pa
     assert client.get('/snapshot.jpg').content==b'frame\1'
     assert json.loads((tmp_path/'cameras.json').read_text())['primary_camera_id']==ids[1]
     assert (tmp_path/'cameras.json').stat().st_mode & 0o777==0o600
+
+
+def test_open_legacy_video_follows_primary_but_named_stream_is_pinned(client, monkeypatch):
+    import asyncio
+    media=client.app.state.media
+    media._primary_camera_id='csi-aaaaaaaaaaaa'
+    monkeypatch.setattr(media,'jpeg',lambda camera_id=None:
+        b'first' if (camera_id or media.primary_camera_id)=='csi-aaaaaaaaaaaa' else b'second')
+    class Request:
+        async def is_disconnected(self): return False
+    legacy=next(r.endpoint for r in client.app.routes if getattr(r,'path',None)=='/video.mjpg')
+    named=next(r.endpoint for r in client.app.routes if getattr(r,'path',None)=='/cameras/{camera_id}/video.mjpg')
+    async def check():
+        response=await legacy(Request())
+        assert (await anext(response.body_iterator)).endswith(b'first\r\n')
+        media._primary_camera_id='csi-bbbbbbbbbbbb'
+        assert (await anext(response.body_iterator)).endswith(b'second\r\n')
+        await response.body_iterator.aclose()
+        pinned=await named('csi-aaaaaaaaaaaa',Request())
+        assert (await anext(pinned.body_iterator)).endswith(b'first\r\n')
+        await pinned.body_iterator.aclose()
+    asyncio.run(check())

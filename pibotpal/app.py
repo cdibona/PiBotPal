@@ -475,9 +475,9 @@ def create_app(controller=None, media=None):
         return await snapshot_for(camera_id)
 
     async def video_for(request: Request, camera_id=None):
-        # Bind a legacy stream to the selected sensor at connection time. A
-        # later primary change opens a new stream rather than mixing frames.
-        selected = camera_id or media.primary_camera_id
+        # Legacy clients follow the selected primary sensor. Sensor-specific
+        # URLs remain pinned to their stable camera ID.
+        selected = camera_id
         try:
             media.jpeg(selected)
         except ValueError as exc:

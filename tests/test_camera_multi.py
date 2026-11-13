@@ -102,3 +102,27 @@ def test_missing_camera_does_not_block_service_and_ids_are_not_paths(tmp_path, m
     assert '/' not in IDS[0] and IDS[0]==camera_identifier('/hardware/ov5647')
     with pytest.raises(ValueError): media.camera(True,'unknown')
     media.close()
+
+
+def test_capture_metadata_is_selected_numeric_and_json_safe():
+    from pibotpal.camera import capture_metadata
+    class Control:
+        def __init__(self, name): self.name=name
+    assert capture_metadata({Control('ExposureTime'): 25000,
+                             Control('AnalogueGain'): 8.0,
+                             Control('SensorTimestamp'): 123456789000,
+                             Control('Lux'): float('nan'),
+                             Control('UnknownControl'): 'private',
+                             'DigitalGain': 1.5}) == {
+          'ExposureTime': 25000, 'AnalogueGain': 8.0,
+          'SensorTimestamp': 123456789000, 'DigitalGain': 1.5}
+
+
+def test_camera_status_exposes_brightness_and_read_only_diagnostics(cameras):
+    media, fake=cameras
+    media.start()
+    for camera_id in IDS: wait_available(media,camera_id)
+    rows={row['id']:row for row in media.list_cameras()}
+    assert rows[IDS[0]]['brightness']==80
+    assert rows[IDS[1]]['brightness']==160
+    assert rows[IDS[0]]['capture_metadata']=={}

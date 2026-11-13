@@ -72,7 +72,8 @@ class Media:
                     for item in inventory:
                         if item['id'] not in self._cameras:
                             self._cameras[item['id']] = {**item, 'thread': None, 'stop': threading.Event(),
-                                'frame': None, 'jpeg': None, 'timestamp': None, 'error': None}
+                                'frame': None, 'jpeg': None, 'timestamp': None, 'error': None,
+                                'capture_metadata': {}, 'brightness': None}
                     if self._primary_camera_id not in self._cameras:
                         preferred = next((c['id'] for c in inventory if c['model'].lower() == 'ov5647'), None)
                         self._primary_camera_id = preferred or (inventory[0]['id'] if inventory else None)
@@ -90,6 +91,8 @@ class Media:
             'enabled': bool(thread and thread.is_alive() and not slot['stop'].is_set()),
             'available': slot['jpeg'] is not None and time.time() - (stamp or 0) <= 3,
             'error': slot['error'], 'timestamp': stamp, 'width': 640, 'height': 480,
+            'capture_metadata': dict(slot.get('capture_metadata', {})),
+            'brightness': slot.get('brightness'),
             'primary': slot['id'] == self._primary_camera_id,
             'video_url': f"/cameras/{slot['id']}/video.mjpg",
             'snapshot_url': f"/cameras/{slot['id']}/snapshot.jpg"}
@@ -205,6 +208,8 @@ class Media:
                 with self._lock:
                     slot['frame'], slot['jpeg'] = frame, encoded.getvalue()
                     slot['timestamp'] = time.time()
+                    slot['capture_metadata'] = dict(getattr(cam, 'last_metadata', {}))
+                    slot['brightness'] = round(float(frame[::16, ::16].mean()), 2)
                     self._sync_primary(slot)
         except Exception as exc:
             with self._lock:

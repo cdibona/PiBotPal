@@ -8,10 +8,22 @@ completion queue themselves: doing so loses the other camera's frame buffers.
 import hashlib
 import itertools
 import mmap
+import math
 import queue
 import selectors
 import threading
 import time
+
+
+def capture_metadata(values):
+    """Copy selected scalar diagnostics before a completed request is reused."""
+    allowed = {'ExposureTime', 'AnalogueGain', 'DigitalGain', 'SensorTimestamp', 'Lux'}
+    result = {}
+    for control, value in values.items():
+        name = control if isinstance(control, str) else getattr(control, 'name', None)
+        if name in allowed and isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value):
+            result[name] = value
+    return result
 
 
 def camera_identifier(hardware_id):
@@ -106,6 +118,7 @@ class Camera:
             raise ValueError('Unknown CSI camera')
         self.device.acquire()
         self.running = False
+        self.last_metadata = {}
         self.closed = False
         self.maps = []
         self.requests = []
@@ -174,6 +187,7 @@ class Camera:
             mapping, offset = self.images[request.cookie]
             image = np.ndarray((self.height, self.width, 3), dtype=np.uint8,
                                buffer=mapping, offset=offset, strides=(self.stride, 3, 1)).copy()
+            self.last_metadata = capture_metadata(request.metadata)
             request.reuse()
             self.device.queue_request(request)
             return image
