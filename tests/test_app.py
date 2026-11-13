@@ -169,3 +169,34 @@ def test_restart_identity_is_stable_and_shared_with_telemetry(client):
     second=client.get('/health').json()['server_instance_id']
     assert len(first)==32 and first==second
     assert call(client,'get_status')['structuredContent']['server_instance_id']==first
+
+
+def test_camera_catalog_and_controller_monitor_are_read_only_in_simulation(client):
+    result=call(client,'camera_list')['structuredContent']
+    assert result=={'cameras':[],'primary_camera_id':None}
+    monitor=call(client,'controller_get')['structuredContent']
+    assert monitor['motion_enabled'] is False and not monitor['connected']
+    assert client.get('/cameras/not-a-camera/snapshot.jpg').status_code==404
+    assert client.get('/cameras/not-a-camera/video.mjpg').status_code==404
+    assert call(client,'camera_select',camera_id='not-a-camera')['isError']
+    assert call(client,'get_status')['structuredContent']['servo_angles']==[None]*12
+
+
+def test_distinct_camera_snapshots_and_persisted_primary_selection(client,tmp_path):
+    import threading
+    media=client.app.state.media
+    ids=['csi-aaaaaaaaaaaa','csi-bbbbbbbbbbbb']
+    for index,identifier in enumerate(ids):
+        media._cameras[identifier]={'id':identifier,'hardware_id':'/sensor/'+str(index),
+            'index':index,'model':'mock'+str(index),'sensor_rotation':0,'connection':'csi',
+            'thread':None,'stop':threading.Event(),'frame':None,'jpeg':b'frame'+bytes([index]),
+            'timestamp':time.time(),'error':None}
+    media._primary_camera_id=ids[0]
+    media._sync_primary(media._cameras[ids[0]])
+    assert client.get('/snapshot.jpg').content==b'frame\0'
+    assert client.get('/cameras/'+ids[1]+'/snapshot.jpg').content==b'frame\1'
+    result=call(client,'camera_select',camera_id=ids[1])['structuredContent']
+    assert result['primary_camera_id']==ids[1]
+    assert client.get('/snapshot.jpg').content==b'frame\1'
+    assert json.loads((tmp_path/'cameras.json').read_text())['primary_camera_id']==ids[1]
+    assert (tmp_path/'cameras.json').stat().st_mode & 0o777==0o600

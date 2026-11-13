@@ -2,6 +2,8 @@
 """Shared camera and explicitly enabled audio. No microphone opens at startup."""
 from __future__ import annotations
 import io
+import json
+import tempfile
 import math
 import os
 from pathlib import Path
@@ -27,6 +29,21 @@ class Media:
         self._jpeg = None
         self._frame_time = None
         self._camera_error = None
+        self._camera_operations = threading.RLock()
+        self._cameras = {}
+        self._camera_inventory_loaded = False
+        self._primary_camera_id = None
+        self._camera_settings = self.root / 'cameras.json'
+        if self._camera_settings.exists():
+            try:
+                settings = json.loads(self._camera_settings.read_text())
+                primary = settings.get('primary_camera_id')
+                if settings.get('version') != 1 or not isinstance(primary, str) or not primary.startswith('csi-') or len(primary) != 16:
+                    raise ValueError('Invalid primary camera settings')
+                self._primary_camera_id = primary
+                os.chmod(self._camera_settings, 0o600)
+            except Exception as exc:
+                raise RuntimeError('Camera settings could not be read; repair cameras.json') from exc
         self._mic_enabled = False
         self._mic_error = None
         self._mic_processes = set()
@@ -40,21 +57,93 @@ class Media:
         self._mic_device = os.environ.get('PIBOTPAL_MIC_DEVICE', 'plughw:CARD=Device,DEV=0')
         self._speaker_device = os.environ.get('PIBOTPAL_SPEAKER_DEVICE', 'default')
 
+    @property
+    def primary_camera_id(self):
+        return self._primary_camera_id
+
+    def _discover_cameras(self):
+        with self._camera_operations:
+            if self._camera_inventory_loaded or self.simulate:
+                return
+            try:
+                from .camera import list_cameras
+                inventory = list_cameras()
+                with self._lock:
+                    for item in inventory:
+                        if item['id'] not in self._cameras:
+                            self._cameras[item['id']] = {**item, 'thread': None, 'stop': threading.Event(),
+                                'frame': None, 'jpeg': None, 'timestamp': None, 'error': None}
+                    if self._primary_camera_id not in self._cameras:
+                        preferred = next((c['id'] for c in inventory if c['model'].lower() == 'ov5647'), None)
+                        self._primary_camera_id = preferred or (inventory[0]['id'] if inventory else None)
+                    self._camera_inventory_loaded = True
+                    if not inventory:
+                        self._camera_error = 'No CSI cameras detected'
+            except Exception as exc:
+                self._camera_error = str(exc)
+
+    def _camera_status(self, slot):
+        thread = slot['thread']
+        stamp = slot['timestamp']
+        return {key: slot[key] for key in ('id', 'hardware_id', 'index', 'model', 'sensor_rotation', 'connection')} | {
+            'label': f"{slot['model'].upper()} · CSI {slot['index']}",
+            'enabled': bool(thread and thread.is_alive() and not slot['stop'].is_set()),
+            'available': slot['jpeg'] is not None and time.time() - (stamp or 0) <= 3,
+            'error': slot['error'], 'timestamp': stamp, 'width': 640, 'height': 480,
+            'primary': slot['id'] == self._primary_camera_id,
+            'video_url': f"/cameras/{slot['id']}/video.mjpg",
+            'snapshot_url': f"/cameras/{slot['id']}/snapshot.jpg"}
+
+    def list_cameras(self):
+        self._discover_cameras()
+        with self._lock:
+            return [self._camera_status(slot) for slot in self._cameras.values()]
+
+    def select_primary(self, camera_id):
+        self._discover_cameras()
+        with self._lock:
+            if camera_id not in self._cameras:
+                raise ValueError('Unknown CSI camera')
+            fd, filename = tempfile.mkstemp(prefix='.cameras-', dir=self.root)
+            try:
+                with os.fdopen(fd, 'w') as out:
+                    os.fchmod(out.fileno(), 0o600)
+                    json.dump({'version': 1, 'primary_camera_id': camera_id}, out)
+                    out.flush(); os.fsync(out.fileno())
+                os.replace(filename, self._camera_settings)
+            finally:
+                if os.path.exists(filename): os.unlink(filename)
+            self._primary_camera_id = camera_id
+            self._sync_primary(self._cameras[camera_id])
+            return self._camera_status(self._cameras[camera_id])
+
+    def _sync_primary(self, slot):
+        if slot['id'] == self._primary_camera_id:
+            self._frame, self._jpeg = slot['frame'], slot['jpeg']
+            self._frame_time, self._camera_error = slot['timestamp'], slot['error']
+            self._camera_thread, self._camera_stop = slot['thread'], slot['stop']
+
     def start(self):
         if not self.simulate:
-            self.camera(True)
+            self._discover_cameras()
+            for camera_id in tuple(self._cameras):
+                self.camera(True, camera_id)
 
     def close(self):
         self.stop()
-        self.camera(False)
+        for camera_id in tuple(self._cameras):
+            self.camera(False, camera_id)
 
     def status(self):
+        cameras = self.list_cameras()
         with self._lock:
             recent = sorted(self.recordings.glob('*.avi'), reverse=True)[:20]
+            primary = next((item for item in cameras if item['primary']), None)
             return {
-                'camera': {'enabled': bool(self._camera_thread and self._camera_thread.is_alive()),
-                           'available': self._jpeg is not None, 'error': self._camera_error,
-                           'timestamp': self._frame_time, 'width': 640, 'height': 480},
+                'camera': primary or {'enabled': False, 'available': self._jpeg is not None,
+                           'error': self._camera_error, 'timestamp': self._frame_time,
+                           'width': 640, 'height': 480},
+                'cameras': cameras, 'primary_camera_id': self._primary_camera_id,
                 'microphone': {'enabled': self._mic_enabled, 'muted': not self._mic_enabled,
                                'available': audio.available() and not self.simulate,
                                'error': self._mic_error, 'listeners': len(self._mic_processes)},
@@ -65,59 +154,89 @@ class Media:
                 'recordings': [{'name': p.name, 'url': '/recordings/' + p.name, 'bytes': p.stat().st_size} for p in recent],
             }
 
-    def camera(self, enabled: bool):
-        with self._lock:
-            if enabled:
-                if self.simulate:
-                    raise RuntimeError('Camera unavailable in simulation')
-                if not self._camera_thread or not self._camera_thread.is_alive():
-                    self._camera_stop.clear()
-                    self._camera_error = None
-                    self._camera_thread = threading.Thread(target=self._capture, daemon=True, name='camera')
-                    self._camera_thread.start()
-            else:
-                self._camera_stop.set()
-                thread = self._camera_thread
-                if thread:
-                    thread.join(timeout=4)
-                self._frame = self._jpeg = None
-        return self.status()['camera']
+    def camera(self, enabled: bool, camera_id=None):
+        if type(enabled) is not bool:
+            raise ValueError('enabled must be a boolean')
+        self._discover_cameras()
+        camera_id = camera_id or self._primary_camera_id
+        if self.simulate and enabled:
+            raise RuntimeError('Camera unavailable in simulation')
+        if camera_id is None and not enabled:
+            return self.status()['camera']
+        with self._camera_operations:
+            with self._lock:
+                slot = self._cameras.get(camera_id)
+                if slot is None:
+                    raise ValueError('Unknown CSI camera')
+                thread = slot['thread']
+                if enabled:
+                    if thread and thread.is_alive():
+                        if slot['stop'].is_set():
+                            raise RuntimeError('Camera is still stopping')
+                        return self._camera_status(slot)
+                    slot['stop'].clear()
+                    slot['error'] = None
+                    slot['thread'] = threading.Thread(target=self._capture, args=(slot,), daemon=True,
+                                                      name='camera-' + camera_id)
+                    self._sync_primary(slot)
+                    slot['thread'].start()
+                    return self._camera_status(slot)
+                slot['stop'].set()
+            if thread:
+                thread.join(timeout=4)
+            with self._lock:
+                slot['frame'] = slot['jpeg'] = None
+                self._sync_primary(slot)
+                return self._camera_status(slot)
 
-    def _capture(self):
+    def _capture(self, slot):
         cam = None
         try:
             from PIL import Image
-            from .camera import Camera as Picamera2
-            cam = Picamera2()
+            from .camera import Camera
+            cam = Camera(slot['id'])
             cam.configure(cam.create_video_configuration(main={'size': (640, 480), 'format': 'RGB888'},
                                                           controls={'FrameRate': 12}))
             cam.start()
-            while not self._camera_stop.is_set():
-                # Preserve BGR frame API; Pillow explicitly receives RGB bytes.
+            while not slot['stop'].is_set():
                 frame = cam.capture_array('main')
                 encoded = io.BytesIO()
                 Image.fromarray(frame[:, :, ::-1]).save(encoded, format='JPEG', quality=78)
-                self._frame, self._jpeg = frame, encoded.getvalue()
-                self._frame_time = time.time()
+                with self._lock:
+                    slot['frame'], slot['jpeg'] = frame, encoded.getvalue()
+                    slot['timestamp'] = time.time()
+                    self._sync_primary(slot)
         except Exception as exc:
-            self._camera_error = str(exc)
+            with self._lock:
+                slot['error'] = str(exc)
         finally:
             if cam:
                 try:
-                    cam.stop()
                     cam.close()
-                except Exception:
-                    pass
-            self._frame = self._jpeg = None
+                except Exception as exc:
+                    with self._lock:
+                        slot['error'] = slot['error'] or str(exc)
+            with self._lock:
+                slot['frame'] = slot['jpeg'] = None
+                self._sync_primary(slot)
 
-    def jpeg(self):
-        if self._jpeg is None or time.time() - (self._frame_time or 0) > 3:
-            raise RuntimeError(self._camera_error or 'Camera is off or starting')
-        return self._jpeg
+    def jpeg(self, camera_id=None):
+        with self._lock:
+            if camera_id is None:
+                jpeg, stamp, error = self._jpeg, self._frame_time, self._camera_error
+            else:
+                slot = self._cameras.get(camera_id)
+                if slot is None:
+                    raise ValueError('Unknown CSI camera')
+                jpeg, stamp, error = slot['jpeg'], slot['timestamp'], slot['error']
+            if jpeg is None or time.time() - (stamp or 0) > 3:
+                raise RuntimeError(error or 'Camera is off or starting')
+            return jpeg
 
-    def get_frame(self):
-        self.jpeg()
-        return self._frame.copy()
+    def get_frame(self, camera_id=None):
+        with self._lock:
+            self.jpeg(camera_id)
+            return (self._frame if camera_id is None else self._cameras[camera_id]['frame']).copy()
 
     def detect_color(self, color='red'):
         from PIL import Image

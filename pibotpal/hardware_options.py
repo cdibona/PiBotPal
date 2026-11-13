@@ -11,6 +11,8 @@ from pathlib import Path
 import tempfile
 import threading
 
+from .gamepad import discover_gamepads
+
 DEFAULTS = {
  'servos': ('Robot HAT / twelve servos', 'motion', {'enabled': True}, 'Active direct I2C driver. Wiring and calibration are managed by the controller.'),
  'front_camera': ('Front CSI camera', 'camera', {'enabled': True}, 'Active libcamera stream. Use camera controls to start or stop capture.'),
@@ -21,6 +23,7 @@ DEFAULTS = {
  'rear_camera': ('Rear USB webcam', 'camera', {'enabled': False, 'device': '', 'width': 640, 'height': 480, 'fps': 10, 'x_mm': 0, 'y_mm': 0, 'z_mm': 0, 'yaw_deg': 180}, 'Provisioning only: USB capture driver and rear feed are not implemented yet. Prefer /dev/v4l/by-id paths.'),
  'lidar': ('SLAM lidar', 'range', {'enabled': False, 'model': 'RPLIDAR C1', 'device': '', 'baud': 460800, 'x_mm': 0, 'y_mm': 0, 'z_mm': 0, 'yaw_deg': 0}, 'Provisioning only: RPLIDAR C1 USB serial, 460800 baud; use SLAMTEC BSD-2-Clause SDK. Scan timestamps and mounting transform are required; lidar alone does not provide reliable leg odometry.'),
  'coral': ('Coral USB Edge TPU', 'accelerator', {'enabled': False, 'connection': 'usb', 'model_path': ''}, 'Provisioning only: compiled int8 TensorFlow Lite perception models; not an accelerator for llama.cpp text LLMs. Runtime integration pending.'),
+ 'gamepad': ('USB PS2-style controller', 'input', {'enabled': False}, 'Read-only recognition and input monitor. USB presence does not prove handset pairing. Sticks and buttons are not mapped to robot motion.'),
  'imu': ('Body IMU', 'orientation', {'enabled': False, 'model': '', 'bus': '/dev/i2c-1', 'address': 104, 'yaw_deg': 0}, 'Provisioning only: no IMU driver identified. World orientation remains unavailable.'),
 }
 
@@ -72,8 +75,10 @@ class HardwareOptions:
    self.options=data
   return self.get()
 
- def get(self, robot=None, media=None):
+ def get(self, robot=None, media=None, gamepad=None):
   robot,media=robot or {},media or {}
+  gamepad = gamepad or {}
+  gamepads = gamepad.get('devices') if 'devices' in gamepad else discover_gamepads()
   serial=sorted(str(p) for p in Path('/dev/serial/by-id').glob('*'))
   webcams=sorted(str(p) for p in Path('/dev/v4l/by-id').glob('*'))
   coral=[]
@@ -85,14 +90,14 @@ class HardwareOptions:
   detected={'servos':None,'front_camera':bool(media.get('camera',{}).get('available')),
             'ultrasonic':bool(robot.get('ultrasonic',{}).get('valid')),'power':bool(robot.get('power',{}).get('valid')),
             'microphone':bool(media.get('microphone',{}).get('available')),'speaker':bool(media.get('speaker',{}).get('available')),
-            'rear_camera':bool(webcams),'coral':bool(coral),'lidar':None,'imu':None}
+            'rear_camera':bool(webcams),'coral':bool(coral),'lidar':None,'imu':None,'gamepad':bool(gamepads)}
   devices=[]
   with self.lock:
    for key,(name,kind,_,notes) in DEFAULTS.items():
     options=copy.deepcopy(self.options[key]);active=key not in ('rear_camera','lidar','coral','imu')
     devices.append({'id':key,'name':name,'kind':kind,'configured':bool(options.get('enabled')),
        'enabled':options['enabled'],'detected':detected[key],'options':options,
-       'status':'active driver' if active else 'configuration only; driver pending','notes':notes})
+       'status':('read-only input monitor; motion disabled' if key=='gamepad' else 'active driver' if active else 'configuration only; driver pending'),'notes':notes})
   mem={}
   try:
    mem={line.split(':')[0]:int(line.split()[1])//1024 for line in Path('/proc/meminfo').read_text().splitlines() if line.startswith(('MemTotal:','MemAvailable:'))}
@@ -100,5 +105,5 @@ class HardwareOptions:
   try:model=Path('/proc/device-tree/model').read_text().rstrip('\0')
   except OSError:model='Unknown host'
   return {'devices':devices,'host':{'model':model,'memory_total_mb':mem.get('MemTotal'),'memory_available_mb':mem.get('MemAvailable')},
-          'discovered':{'serial_ports':serial,'usb_cameras':webcams,'coral_usb_ids':coral},
+          'discovered':{'serial_ports':serial,'usb_cameras':webcams,'coral_usb_ids':coral,'gamepads':gamepads},
           'configuration_effect':'Inventory/provisioning only. Saving never activates hardware, changes drivers, or grants microphone consent.'}

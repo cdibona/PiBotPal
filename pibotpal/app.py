@@ -23,6 +23,7 @@ from .settings import Settings
 from .assistant import Assistant
 from .plans import PlanStore, parse_plan
 from .hardware_options import HardwareOptions
+from .gamepad import GamepadMonitor
 from . import integrations
 
 
@@ -40,6 +41,7 @@ def create_app(controller=None, media=None):
     server_instance_id = uuid4().hex
     plans = PlanStore(media.root, controller)
     hardware_options = HardwareOptions(media.root)
+    gamepad = GamepadMonitor(simulate=controller.simulate)
     motion_gate = asyncio.Lock()
     settings = Settings(media.root)
     llm_example = {'id': None}
@@ -95,6 +97,7 @@ def create_app(controller=None, media=None):
         state.update(media.status())
         state['examples'] = examples.status()
         state['plan'] = plans.status()
+        state['gamepad'] = gamepad.status()
         if llm_example['id']:
             try:
                 job = assistant.snapshot(llm_example['id'])
@@ -189,9 +192,25 @@ def create_app(controller=None, media=None):
             return await invoke(examples.run, example_id, options or {})
 
     @mcp.tool()
-    async def camera(enabled: bool) -> dict:
-        """Enable/disable the shared camera. Video: /video.mjpg; still image: /snapshot.jpg."""
-        return await invoke(media.camera, enabled)
+    async def camera(enabled: bool, camera_id: str | None = None) -> dict:
+        """Start/stop a detected CSI camera; omit camera_id for the primary camera. Never enables microphone or motion."""
+        return await invoke(media.camera, enabled, camera_id)
+
+    @mcp.tool()
+    async def camera_list() -> dict:
+        """List detected CSI sensors, independent stream URLs and primary selection."""
+        return {'cameras': await invoke(media.list_cameras), 'primary_camera_id': media.primary_camera_id}
+
+    @mcp.tool()
+    async def camera_select(camera_id: str) -> dict:
+        """Persist which detected camera supplies legacy video, snapshots, vision tests and native clients."""
+        await invoke(media.select_primary, camera_id)
+        return await camera_list()
+
+    @mcp.tool()
+    async def controller_get() -> dict:
+        """Read attached USB gamepad identity, axes and buttons. Receiver detection does not prove handset pairing; never moves robot."""
+        return gamepad.status()
 
     @mcp.tool()
     async def microphone(enabled: bool) -> dict:
@@ -301,7 +320,7 @@ def create_app(controller=None, media=None):
     @mcp.tool()
     async def hardware_get() -> dict:
         """Read passive hardware inventory, provisioning settings and USB/serial discovery; does not open devices."""
-        return await invoke(hardware_options.get, controller.status(), media.status())
+        return await invoke(hardware_options.get, controller.status(), media.status(), gamepad.status())
 
     @mcp.tool()
     async def hardware_save(device_id: str, options: dict) -> dict:
@@ -391,6 +410,7 @@ def create_app(controller=None, media=None):
                 raise RuntimeError('Another PiBotPal process owns this hardware')
             await invoke(controller.start)
             await invoke(media.start)
+            await invoke(gamepad.start)
             task = asyncio.create_task(watchdog())
             try:
                 async with mcp.session_manager.run():
@@ -407,12 +427,14 @@ def create_app(controller=None, media=None):
                 await invoke(plans.close)
                 await invoke(examples.close)
                 await invoke(controller.close)
+                await invoke(gamepad.close)
                 await invoke(media.close)
 
     app = FastAPI(title='PiBotPal', lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.controller, app.state.media, app.state.mcp = controller, media, mcp
     app.state.settings, app.state.assistant = settings, assistant
     app.state.plans, app.state.hardware_options = plans, hardware_options
+    app.state.gamepad = gamepad
 
     @app.middleware('http')
     async def private_origin(request: Request, call_next):
@@ -436,28 +458,49 @@ def create_app(controller=None, media=None):
         return {'status': 'ok', 'service': 'PiBotPal', 'server_instance_id': server_instance_id,
                 'simulation': os.environ.get('PIBOTPAL_SIMULATE') == '1'}
 
-    @app.get('/snapshot.jpg')
-    async def snapshot():
+    async def snapshot_for(camera_id=None):
         try:
-            return Response(media.jpeg(), media_type='image/jpeg')
+            return Response(media.jpeg(camera_id), media_type='image/jpeg')
+        except ValueError as exc:
+            raise HTTPException(404, str(exc))
         except RuntimeError as exc:
             raise HTTPException(503, str(exc))
 
-    @app.get('/video.mjpg')
-    async def video(request: Request):
+    @app.get('/snapshot.jpg')
+    async def snapshot():
+        return await snapshot_for()
+
+    @app.get('/cameras/{camera_id}/snapshot.jpg')
+    async def camera_snapshot(camera_id: str):
+        return await snapshot_for(camera_id)
+
+    async def video_for(request: Request, camera_id=None):
+        # Bind a legacy stream to the selected sensor at connection time. A
+        # later primary change opens a new stream rather than mixing frames.
+        selected = camera_id or media.primary_camera_id
         try:
-            media.jpeg()
+            media.jpeg(selected)
+        except ValueError as exc:
+            raise HTTPException(404, str(exc))
         except RuntimeError as exc:
             raise HTTPException(503, str(exc))
         async def frames():
             while not await request.is_disconnected():
                 try:
-                    jpeg = media.jpeg()
-                except RuntimeError:
+                    jpeg = media.jpeg(selected)
+                except (RuntimeError, ValueError):
                     break
                 yield b'--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ' + str(len(jpeg)).encode() + b'\r\n\r\n' + jpeg + b'\r\n'
                 await asyncio.sleep(0.1)
         return StreamingResponse(frames(), media_type='multipart/x-mixed-replace; boundary=frame')
+
+    @app.get('/video.mjpg')
+    async def video(request: Request):
+        return await video_for(request)
+
+    @app.get('/cameras/{camera_id}/video.mjpg')
+    async def camera_video(camera_id: str, request: Request):
+        return await video_for(request, camera_id)
 
     @app.get('/audio.wav')
     async def audio():

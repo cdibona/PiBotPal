@@ -10,6 +10,7 @@ from pibotpal.audio import effect_wave, SOUNDS
 
 def test_default_mute_never_opens_capture(tmp_path, monkeypatch):
     monkeypatch.setenv('PIBOTPAL_DATA', str(tmp_path))
+    monkeypatch.setattr('pibotpal.camera.list_cameras', lambda: [])
     calls=[]
     monkeypatch.setattr('pibotpal.audio.PCM', lambda *a, **kw: calls.append(a))
     monkeypatch.setattr('pibotpal.audio.available', lambda: True)
@@ -25,6 +26,7 @@ def test_default_mute_never_opens_capture(tmp_path, monkeypatch):
 
 def test_mute_terminates_capture_and_stops_frames(tmp_path, monkeypatch):
     monkeypatch.setenv('PIBOTPAL_DATA', str(tmp_path))
+    monkeypatch.setattr('pibotpal.camera.list_cameras', lambda: [])
     class Device:
         stopped=False
         closed=False
