@@ -9,6 +9,7 @@ packages already installed on the machine. Do not remove those packages.
 | Component | License / usage |
 | --- | --- |
 | python-periphery 2.4.1 | MIT; direct Linux I2C/GPIO HAT transport |
+| Raspberry Pi pinctrl (raspi-utils-core) | BSD-3-Clause; Pi 5 / V4 HAT speaker-enable workaround |
 | FastAPI / uvicorn / MCP Python SDK | MIT / BSD-3-Clause / MIT; HTTP and MCP |
 | NumPy / Pillow | BSD-3-Clause / MIT-CMU; pixel processing and JPEG |
 | Three.js / OrbitControls | MIT; vendored notice retained |
@@ -39,6 +40,7 @@ remain in Git history with their original notices. See references/README.md.
 Upstream license evidence:
 
 - https://github.com/vsergeev/python-periphery/blob/master/LICENSE
+- https://github.com/raspberrypi/utils/blob/master/LICENCE
 - https://github.com/libcamera-org/libcamera/blob/master/src/py/libcamera/py_main.cpp
 - https://github.com/libcamera-org/libcamera/blob/master/LICENSES/LGPL-2.1-or-later.txt
 - https://github.com/festvox/flite/blob/master/COPYING

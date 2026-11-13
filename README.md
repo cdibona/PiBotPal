@@ -259,6 +259,13 @@ separate worker, with only the latest pending state per source retained. STOP
 cancels queued/current audio. Audio errors appear in speaker status without
 changing arming results or microphone consent. Arming never moves a servo.
 
+On Pi 5 with the V4 HAT's `sndrpihifiberry` playback device, the kernel reserves
+GPIO20 as an unused I²S input even though the HAT uses it for amplifier enable.
+PiBotPal recognizes that specific pin-group configuration and uses Raspberry
+Pi's BSD-licensed `/usr/bin/pinctrl` to switch GPIO20, keeping it low after audio
+finishes or stops. Other GPIO configurations use the normal character-device
+interface. No SunFounder runtime code is required.
+
 
 ## Camera pan servo expansion
 

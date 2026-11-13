@@ -10,6 +10,7 @@ import fcntl
 import math
 import os
 from pathlib import Path
+import subprocess
 import threading
 import time
 
@@ -147,6 +148,38 @@ _speaker = None
 _speaker_lock = threading.Lock()
 
 
+def _speaker_needs_pinctrl(pin):
+    """Recognize the Pi 5 playback-only HAT's unused, kernel-owned I2S input.
+
+    That pin group reserves GPIO20, although the V4 amplifier needs it as an
+    enable output. Do not bypass GPIO ownership for other pins/configurations.
+    """
+    if pin != 20 or os.getenv('PIBOTPAL_GPIO_CHIP'):
+        return False
+    try:
+        compatible = Path('/proc/device-tree/compatible').read_bytes().split(b'\0')
+        pins = Path('/proc/device-tree/axi/pcie@1000120000/rp1/gpio@d0000/rp1_i2s0_18_21/pins').read_bytes().split(b'\0')
+        cards = Path('/proc/asound/cards').read_text()
+        return (b'raspberrypi,5-model-b' in compatible and b'gpio20' in pins
+                and 'sndrpihifiberry' in cards)
+    except OSError:
+        return False
+
+
+class _PinctrlSpeaker:
+    """GPIO20 amplifier switch for the known Pi 5 I2S pin-group conflict.
+
+    Raspberry Pi's BSD-licensed pinctrl controls this single output directly.
+    Keep it low between phrases; restoring I2S input would float amp enable.
+    """
+    def write(self, enabled):
+        subprocess.run(['/usr/bin/pinctrl', 'set', '20', 'op', 'dh' if enabled else 'dl'],
+                       check=True, capture_output=True, text=True, timeout=1)
+
+    def close(self):
+        pass  # No handle; disable_speaker has already driven the pin low.
+
+
 def enable_speaker():
     global _speaker
     from periphery import GPIO
@@ -155,7 +188,13 @@ def enable_speaker():
             v5 = any(path.read_bytes().rstrip(b'\0') == b'9daeea78-0000-076e-0032-582369ac3e02'
                      for path in Path('/proc/device-tree').glob('*hat*/uuid'))
             pin = int(os.getenv('PIBOTPAL_SPEAKER_GPIO', '12' if v5 else '20'))
-            _speaker = GPIO(header_chip(), pin, 'low', label='pibotpal-speaker-enable')
+            if _speaker_needs_pinctrl(pin):
+                # Store the switch before any write so failed/partial enable
+                # operations can still be cleaned up by disable_speaker.
+                _speaker = _PinctrlSpeaker()
+                _speaker.write(False)
+            else:
+                _speaker = GPIO(header_chip(), pin, 'low', label='pibotpal-speaker-enable')
         _speaker.write(True)
 
 
