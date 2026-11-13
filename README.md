@@ -239,6 +239,14 @@ same input state. Unplug/reconnect and permission errors are handled without
 mapping sticks to robot motion. Controller arming is separate from system motion arming.
 The monitor uses the Linux joystick interface directly, without a new library.
 
+For receiver `2563:0575` with the original sequential HID button codes, PiBotPal
+uses its physical button layout: **Start is index 9**, while index 11 is the
+right stick button. Generic Linux labels incorrectly call index 11 Start.
+The layout agrees with the matching Linux entry in
+[SDL_GameControllerDB](https://github.com/mdqinc/SDL_GameControllerDB/blob/master/gamecontrollerdb.txt).
+Other receivers and already-corrected kernel mappings keep their Linux labels;
+telemetry includes the raw `button_codes` and selected `button_mapping`.
+
 The gamepad icon beside **Arm motion** and a fresh **Start** button press both
 toggle controller arming. The icon is filled when armed and connected, outlined
 when disarmed, and unavailable when no receiver is attached. Controller input is
@@ -258,6 +266,11 @@ Startup, reconnection and unchanged settings remain silent. Speech runs on a
 separate worker, with only the latest pending state per source retained. STOP
 cancels queued/current audio. Audio errors appear in speaker status without
 changing arming results or microphone consent. Arming never moves a servo.
+
+Playback explicitly opens the named ALSA `robothat` device from the HAT audio
+configuration. The desktop sound server can redirect `default`, so it is not
+used for robot speech. `PIBOTPAL_SPEAKER_DEVICE` overrides the output when needed;
+`get_status.speaker.device` reports the selected route.
 
 On Pi 5 with the V4 HAT's `sndrpihifiberry` playback device, the kernel reserves
 GPIO20 as an unused I²S input even though the HAT uses it for amplifier enable.

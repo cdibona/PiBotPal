@@ -79,7 +79,28 @@ def capabilities(fd):
     codes = struct.unpack('=512H', button_map)
     return {'name':name, 'axes':[0.0]*axes, 'buttons':[False]*buttons,
             'axis_names':[AXIS_CODES.get(code,f'Axis {i} (code {code})') for i,code in enumerate(axis_map[:axes])],
+            'button_codes':list(codes[:buttons]),
             'button_names':[BUTTON_CODES.get(code,f'Button {i} (code {code})') for i,code in enumerate(codes[:buttons])]}
+
+
+def _controller_layout(device, data):
+    """Resolve receiver-specific physical labels without changing kernel input."""
+    data = dict(data, button_mapping='linux')
+    if (device.get('vendor_id') == '2563' and device.get('product_id') == '0575'
+            and data.get('button_codes') == list(range(0x130, 0x13d))):
+        # This receiver reports ordinal HID buttons, so generic Linux labels
+        # incorrectly call physical Start (index 9) R2 and right stick Start.
+        # Mapping facts: SDL_GameControllerDB's Linux GUID
+        # 03000000632500007505000010010000, corroborated by the device driver:
+        # https://github.com/mdqinc/SDL_GameControllerDB/blob/master/gamecontrollerdb.txt
+        # https://github.com/hbiyik/hid-shanwan/blob/master/hid-shanwan.c
+        # Only repair the original sequential map; corrected drivers retain
+        # their own semantics. No external driver or mapping library is used.
+        data['button_names'] = ['North', 'East', 'South', 'West', 'L1', 'R1',
+                                'L2', 'R2', 'Select', 'Start', 'Left stick',
+                                'Right stick', 'Mode']
+        data['button_mapping'] = 'shanwan-2563:0575'
+    return data
 
 
 class GamepadMonitor:
@@ -121,6 +142,7 @@ class GamepadMonitor:
         self._state = {'devices':[], 'active_device_id':None, 'connected':False,
                        'enabled':enabled, 'attached':False,
                        'axes':[], 'buttons':[], 'axis_names':[], 'button_names':[],
+                       'button_codes':[], 'button_mapping':None,
                        'last_event_at':None, 'events_seen':0, 'error':None,
                        'motion_enabled':False,
                        'note':'Start toggles controller arming. Disarming keeps Start listening and ignores other inputs. Receiver presence does not verify wireless pairing; no robot movement is mapped.'}
@@ -205,7 +227,8 @@ class GamepadMonitor:
             self._last_start_toggle = None
             with self._lock:
                 self._state.update(connected=False,active_device_id=None,axes=[],buttons=[],
-                                   axis_names=[],button_names=[],last_event_at=None,events_seen=0,error=error)
+                                   axis_names=[],button_names=[],button_codes=[],button_mapping=None,
+                                   last_event_at=None,events_seen=0,error=error)
 
     def _refresh(self):
         devices = self._discover()
@@ -228,7 +251,7 @@ class GamepadMonitor:
                 fd = None
                 try:
                     fd = self._open(device['stable_path'] or device['path'])
-                    data = self._capabilities(fd)
+                    data = _controller_layout(device, self._capabilities(fd))
                     self._fd = fd
                     self._generation += 1
                     self._start_down = self._start_ready = False
@@ -237,6 +260,8 @@ class GamepadMonitor:
                         self._state.update(connected=True,active_device_id=device['id'],error=None,
                                            axes=data['axes'],buttons=data['buttons'],
                                            axis_names=data['axis_names'],button_names=data['button_names'],
+                                           button_codes=data.get('button_codes', []),
+                                           button_mapping=data['button_mapping'],
                                            events_seen=0,last_event_at=None)
                     return
                 except PermissionError:

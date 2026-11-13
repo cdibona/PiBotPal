@@ -70,7 +70,9 @@ class Media:
         self._record_error = None
         self._record_camera_id = None
         self._mic_device = os.environ.get('PIBOTPAL_MIC_DEVICE', 'plughw:CARD=Device,DEV=0')
-        self._speaker_device = os.environ.get('PIBOTPAL_SPEAKER_DEVICE', 'default')
+        # Desktop PulseAudio hooks can redirect ALSA's "default" despite the
+        # HAT's asound.conf. Address the named hardware route explicitly.
+        self._speaker_device = os.environ.get('PIBOTPAL_SPEAKER_DEVICE', 'robothat')
 
     @property
     def primary_camera_id(self):
@@ -189,6 +191,7 @@ class Media:
                                'available': audio.available() and not self.simulate,
                                'error': self._mic_error, 'listeners': len(self._mic_processes)},
                 'speaker': {'available': audio.available() and not self.simulate,
+                            'device': self._speaker_device,
                             'busy': bool(self._audio_active or self._audio_queue),
                             'queued_announcements': sum(job[0] is not None for job in self._audio_queue),
                             'error': self._speaker_error},

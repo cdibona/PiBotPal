@@ -10,9 +10,10 @@ from pibotpal.media import Media
 @pytest.fixture
 def sound(tmp_path, monkeypatch):
     monkeypatch.setenv('PIBOTPAL_DATA', str(tmp_path))
+    monkeypatch.delenv('PIBOTPAL_SPEAKER_DEVICE', raising=False)
     monkeypatch.setattr('pibotpal.camera.list_cameras', lambda: [])
     monkeypatch.setattr('pibotpal.audio.available', lambda: True)
-    state = {'generated': [], 'played': [], 'opened': 0, 'maximum_open': 0,
+    state = {'generated': [], 'played': [], 'devices': [], 'opened': 0, 'maximum_open': 0,
              'capture': 0, 'stopped': 0, 'drained': 0, 'gate': {}, 'failure': set()}
     def synthesize(text):
         state['generated'].append(text)
@@ -26,6 +27,7 @@ def sound(tmp_path, monkeypatch):
         return text.encode(), 16000, 1
     class Device:
         def __init__(self, *args, **kwargs):
+            state['devices'].append(args[0])
             state['capture'] += int(kwargs.get('capture', False))
             state['opened'] += 1
             state['maximum_open'] = max(state['maximum_open'], state['opened'])
@@ -95,6 +97,26 @@ def test_announcements_queue_after_speech_without_concurrent_pcm_or_microphone(s
     assert state['maximum_open'] == 1 and state['opened'] == 0
     assert state['drained'] == 3
     assert state['capture'] == 0 and media.status()['microphone']['muted']
+
+
+def test_announcements_use_explicit_hat_route_not_desktop_default(sound):
+    media, state = sound
+    media.announce('controller armed'); idle(media)
+    assert state['devices'] == ['robothat']
+    assert media.status()['speaker']['device'] == 'robothat'
+    assert not state['capture']
+
+
+def test_speaker_device_override_is_honored(sound, monkeypatch):
+    _, state = sound
+    monkeypatch.setenv('PIBOTPAL_SPEAKER_DEVICE', 'custom-output')
+    media = Media()
+    try:
+        media.announce('system disarmed'); idle(media)
+        assert state['devices'] == ['custom-output']
+        assert media.status()['speaker']['device'] == 'custom-output'
+    finally:
+        media.close()
 
 
 def test_toggle_bursts_coalesce_to_latest_pending_state_per_source(sound):

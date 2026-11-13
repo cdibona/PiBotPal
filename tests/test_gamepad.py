@@ -20,6 +20,81 @@ def fake_caps(fd):
             'axis_names':['X','Y'],'button_names':['South','East']}
 
 
+def ioctl_monitor(monkeypatch, *, identity=None, codes=None, clock=None):
+    """Use the real capability parser with the receiver's captured ioctl layout."""
+    codes = list(range(0x130, 0x13d)) if codes is None else codes
+    replies = {
+        0x80016a11: bytes([6]),
+        0x80016a12: bytes([len(codes)]),
+        0x81006a13: b'USB WirelessGamepad'.ljust(256, b'\0'),
+        0x80406a32: bytes([0, 1, 2, 5, 16, 17]).ljust(64, b'\0'),
+        0x84006a34: struct.pack('=512H', *(codes + [0]*(512-len(codes)))),
+    }
+    def ioctl(fd, request, target, mutate):
+        assert fd == 7 and mutate and len(target) == len(replies[request])
+        target[:] = replies[request]
+        return 0
+    monkeypatch.setattr('pibotpal.gamepad.fcntl.ioctl', ioctl)
+    monitor = GamepadMonitor(discover=lambda:[identity or device()], opener=lambda p:7,
+                             close_fd=lambda fd:None, monotonic=clock)
+    monitor._refresh()
+    return monitor
+
+
+def test_shanwan_sequential_hid_map_uses_physical_start_button(monkeypatch):
+    now = [1.0]
+    monitor = ioctl_monitor(monkeypatch, clock=lambda:now[0])
+    state = monitor.status()
+    assert state['button_mapping'] == 'shanwan-2563:0575'
+    assert state['button_codes'] == list(range(0x130, 0x13d))
+    assert state['button_names'] == ['North', 'East', 'South', 'West', 'L1', 'R1',
+                                    'L2', 'R2', 'Select', 'Start', 'Left stick',
+                                    'Right stick', 'Mode']
+    monitor._events(b''.join(EVENT.pack(0, 0, 0x81, n) for n in range(13)))
+    # Linux calls index 11 BTN_START on this descriptor, but the handset
+    # actually uses it for the right stick. It must never toggle arming.
+    monitor._events(EVENT.pack(1, 1, 1, 11)+EVENT.pack(2, 0, 1, 11))
+    assert monitor.status()['armed'] and monitor.drain_notifications() == []
+    monitor._events(EVENT.pack(3, 1, 1, 9))
+    assert not monitor.status()['armed'] and monitor.status()['connected']
+    assert monitor.drain_notifications() == [{'armed':False}]
+    now[0] = 2.0
+    monitor._events(EVENT.pack(4, 0, 1, 9)+EVENT.pack(5, 1, 1, 9))
+    assert monitor.status()['armed']
+    assert monitor.drain_notifications() == [{'armed':True}]
+    monitor.close()
+
+
+@pytest.mark.parametrize('identity_change', [{'vendor_id':'1234'}, {'product_id':'0576'}])
+def test_other_receiver_identities_keep_linux_button_semantics(monkeypatch, identity_change):
+    monitor = ioctl_monitor(monkeypatch, identity=dict(device(), **identity_change))
+    state = monitor.status()
+    assert state['button_mapping'] == 'linux'
+    assert state['button_names'][9] == 'R2' and state['button_names'][11] == 'Start'
+    monitor._events(EVENT.pack(0, 0, 0x81, 11)+EVENT.pack(1, 1, 1, 11))
+    assert not monitor.status()['armed']
+    monitor.close()
+
+
+def test_shanwan_corrected_kernel_mapping_is_not_mapped_twice(monkeypatch):
+    codes = [0x130, 0x131, 0x133, 0x134, 0x136, 0x137, 0x138, 0x139,
+             0x13a, 0x13b, 0x13c, 0x13d, 0x13e]
+    monitor = ioctl_monitor(monkeypatch, codes=codes)
+    state = monitor.status()
+    assert state['button_mapping'] == 'linux' and state['button_codes'] == codes
+    assert state['button_names'] == ['South', 'East', 'North', 'West', 'L1', 'R1',
+                                    'L2', 'R2', 'Select', 'Start', 'Mode',
+                                    'Left stick', 'Right stick']
+    monitor.close()
+
+
+def test_shanwan_incomplete_button_map_is_not_assumed_to_match(monkeypatch):
+    monitor = ioctl_monitor(monkeypatch, codes=list(range(0x130, 0x13c)))
+    assert monitor.status()['button_mapping'] == 'linux'
+    assert monitor.status()['button_names'][11] == 'Start'
+    monitor.close()
+
+
 def test_passive_discovery_keeps_usb_identity_and_stable_path(tmp_path):
     sys=tmp_path/'sys';dev=tmp_path/'dev';node=sys/'js0'/'device';(node/'id').mkdir(parents=True)
     (node/'name').write_text('USB WirelessGamepad ')
