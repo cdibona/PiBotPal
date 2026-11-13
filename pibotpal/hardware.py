@@ -43,6 +43,8 @@ class Controller:
         self._servos, self._sonar, self._moves = [], None, None
         self._hat = None
         self._armed = self._busy = self._estop = False
+        self._interrupting = 0
+        self._motion_id = 0
         self._action = self._action_error = None
         self._angles = [None] * 12
         self._offsets = [0.0] * 12
@@ -125,7 +127,7 @@ class Controller:
         with self._lock:
             if self._closed.is_set():
                 raise RuntimeError('Controller is closed')
-            if self._busy:
+            if self._busy or self._interrupting:
                 raise RuntimeError('Wait for the current action to stop before arming')
             if any(e.startswith('Calibration read failed:') for e in self._errors):
                 raise RuntimeError('Repair calibration before arming')
@@ -134,13 +136,32 @@ class Controller:
         return self.status()
 
     def stop(self):
+        return self._interrupt(disarm=True)
+
+    def halt(self):
+        """Cancel motion and finish active writes without changing arming.
+
+        The canceled worker may still be cleaning up when this returns. New
+        motion is accepted once busy clears; halt never clears errors or estop.
+        """
+        return self._interrupt(disarm=False)
+
+    def _interrupt(self, *, disarm):
         # Setting the event first also interrupts an in-progress interpolation.
         self._cancel.set()
         with self._lock:
-            self._armed, self._estop = False, True
+            self._interrupting += 1
+            # A submit holding this lock may have cleared the early signal.
+            self._cancel.set()
+            if disarm:
+                self._armed, self._estop = False, True
         # Barrier: after return, an active servo write batch has finished.
-        with self._io_lock:
-            pass
+        try:
+            with self._io_lock:
+                pass
+        finally:
+            with self._lock:
+                self._interrupting -= 1
         return self.status()
 
     def status(self):
@@ -151,6 +172,7 @@ class Controller:
                 sensor['valid'] = False
             return {
                 'armed': self._armed, 'busy': self._busy, 'estop': self._estop,
+                'motion_id': self._motion_id,
                 'action': self._action, 'action_error': self._action_error,
                 'simulate': self.simulate, 'servo_angles': angles,
                 'servo_offsets': list(self._offsets), 'servo_directions': list(DIRECTIONS),
@@ -182,8 +204,12 @@ class Controller:
                 raise RuntimeError('Controller is not running')
             if not self._armed or self._estop:
                 raise RuntimeError('Arm the robot before moving')
-            if self._busy:
+            if self._busy or self._interrupting:
                 raise RuntimeError('Robot is busy; wait or stop the current action')
+            # A halted job retains busy until its worker has fully unwound.
+            # Only a fresh accepted job may clear its cancellation signal.
+            self._cancel.clear()
+            self._motion_id += 1
             self._busy, self._action, self._action_error = True, name, None
             self._queue.put_nowait(operation)
         return self.status()

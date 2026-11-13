@@ -24,6 +24,7 @@ from .assistant import Assistant
 from .plans import PlanStore, parse_plan
 from .hardware_options import HardwareOptions
 from .gamepad import GamepadMonitor
+from .gamepad_actions import MappingStore, GamepadDriver, defaults as controller_defaults
 from . import integrations
 
 
@@ -42,6 +43,8 @@ def create_app(controller=None, media=None):
     plans = PlanStore(media.root, controller)
     hardware_options = HardwareOptions(media.root)
     gamepad = GamepadMonitor(simulate=controller.simulate, settings_path=media.root / 'controller.json')
+    controller_mappings = MappingStore(media.root / 'controller-mapping.json')
+    gamepad_driver = GamepadDriver(controller_mappings)
     motion_gate = asyncio.Lock()
     settings = Settings(media.root)
     llm_example = {'id': None}
@@ -79,6 +82,15 @@ def create_app(controller=None, media=None):
                 pass
         return {'content': blocks}
 
+    def controller_snapshot():
+        state = gamepad.status()
+        state['mapping'] = controller_mappings.public(state)
+        state['control'] = dict(gamepad_driver.state)
+        state['motion_enabled'] = bool(state['armed'] and controller.status()['armed']
+                                       and state['control']['state'] in ('ready', 'running'))
+        state['note'] = 'Live input monitoring stays available while disarmed. Start toggles controller arming; mapped motion also requires Arm motion.'
+        return state
+
     assistant = Assistant(settings, mcp.list_tools, call_robot_tool)
 
     def example_catalog():
@@ -105,7 +117,7 @@ def create_app(controller=None, media=None):
         state.update(media.status())
         state['examples'] = examples.status()
         state['plan'] = plans.status()
-        state['gamepad'] = gamepad.status()
+        state['gamepad'] = controller_snapshot()
         if llm_example['id']:
             try:
                 job = assistant.snapshot(llm_example['id'])
@@ -134,20 +146,38 @@ def create_app(controller=None, media=None):
             result = await invoke(controller.arm, armed)
             now_armed = controller.status()['armed']
             if was_armed != now_armed:
+                gamepad_driver.reset()
+                gamepad.drain_input_events()
                 await announce_arming('system', now_armed)
         return result if isinstance(result, dict) else await get_status()
+
+    async def stop_locked():
+        await invoke(plans.stop)
+        await invoke(controller.stop)
+        await invoke(examples.stop)
+        gamepad_driver.reset()
+        gamepad_driver.halted()
+        gamepad.drain_input_events()
+        gamepad.drain_notifications()
+        await invoke(media.stop)
 
     @mcp.tool()
     async def stop() -> dict:
         """Cancel examples, stop sending movement commands, disarm and mute microphone/speaker."""
         async with motion_gate:
-            await invoke(plans.stop)
-            await invoke(controller.stop)
-            await invoke(examples.stop)
-            gamepad.drain_notifications()
-            await invoke(media.stop)
+            await stop_locked()
         await assistant.cancel_all()
         return await get_status()
+
+    @mcp.tool()
+    async def halt() -> dict:
+        """Cancel current manual motion and hold position, keeping current arming. Requires neutral controller input before reuse."""
+        async with motion_gate:
+            ensure_manual()
+            gamepad_driver.reset()
+            gamepad_driver.halted()
+            gamepad.drain_input_events()
+            return await invoke(controller.halt)
 
     def ensure_manual():
         if plans.status()['running']:
@@ -229,12 +259,38 @@ def create_app(controller=None, media=None):
     @mcp.tool()
     async def controller_get() -> dict:
         """Read attached USB gamepad identity, axes and buttons. Receiver detection does not prove handset pairing; never moves robot."""
-        return gamepad.status()
+        return controller_snapshot()
 
     @mcp.tool()
     async def controller_set_enabled(enabled: bool) -> dict:
         """Persist controller arming. Start remains available while disarmed; never arms system motion or moves the robot."""
-        return await invoke(gamepad.set_enabled, enabled)
+        async with motion_gate:
+            previous = gamepad.status()['enabled']
+            await invoke(gamepad.set_enabled, enabled)
+            if previous != enabled:
+                if gamepad_driver.owns(controller.status()):
+                    await invoke(controller.halt)
+                    gamepad_driver.halted()
+                gamepad_driver.reset()
+        return controller_snapshot()
+
+    @mcp.tool()
+    async def controller_save_mapping(speed: int, deadzone: float, bindings: list[dict]) -> dict:
+        """Persist USB controller actions, speed (1–80), and stick dead zone (0.15–0.8). Start is reserved. Saving never starts movement."""
+        async with motion_gate:
+            await invoke(controller_mappings.save, speed, deadzone, bindings)
+            if gamepad_driver.owns(controller.status()):
+                await invoke(controller.halt)
+                gamepad_driver.halted()
+            gamepad_driver.reset()
+            gamepad.drain_input_events()
+        return controller_snapshot()
+
+    @mcp.tool()
+    async def controller_reset_mapping() -> dict:
+        """Restore D-pad/left-stick driving, A stand, B sit, X wave, Y ready, Select stop. Never starts movement."""
+        default = controller_defaults()
+        return await controller_save_mapping(default['speed'], default['deadzone'], default['bindings'])
 
     @mcp.tool()
     async def microphone(enabled: bool) -> dict:
@@ -344,7 +400,7 @@ def create_app(controller=None, media=None):
     @mcp.tool()
     async def hardware_get() -> dict:
         """Read passive hardware inventory, provisioning settings and USB/serial discovery; does not open devices."""
-        return await invoke(hardware_options.get, controller.status(), media.status(), gamepad.status())
+        return await invoke(hardware_options.get, controller.status(), media.status(), controller_snapshot())
 
     @mcp.tool()
     async def hardware_save(device_id: str, options: dict) -> dict:
@@ -423,16 +479,12 @@ def create_app(controller=None, media=None):
             async with motion_gate:
                 if time.monotonic() - lease['last_seen'] > 15 and (controller.status().get('armed') or media.status()['microphone']['enabled']):
                     expired = True
-                    await invoke(plans.stop)
-                    await invoke(controller.stop)
-                    await invoke(examples.stop)
-                    gamepad.drain_notifications()
-                    await invoke(media.stop)
+                    await stop_locked()
             if expired:
                 # Cancelled model jobs may call stop() during their cleanup.
                 await assistant.cancel_all()
 
-    async def controller_announcements():
+    async def controller_inputs():
         while True:
             await asyncio.sleep(.05)
             # Drain inside the same gate as STOP so queued feedback cannot
@@ -440,6 +492,35 @@ def create_app(controller=None, media=None):
             async with motion_gate:
                 for event in gamepad.drain_notifications():
                     await announce_arming('controller', event['armed'])
+                pad, input_events = gamepad.read_input()
+                robot = controller.status()
+                example = examples.status()
+                blocked = plans.status()['running'] or (example.get('running') and not example.get('permits_manual_motion'))
+                decision = gamepad_driver.update(pad, robot, input_events, blocked=blocked)
+                stopped = False
+                if decision:
+                    try:
+                        if decision['kind'] == 'stop':
+                            await stop_locked()
+                            stopped = True
+                        elif decision['kind'] == 'halt':
+                            if gamepad_driver.owns(controller.status()):
+                                await invoke(controller.halt)
+                            gamepad_driver.halted()
+                        elif gamepad.status()['armed'] and controller.status()['armed']:
+                            # The same guarded bounded action operation used by
+                            # MCP move(). No browser timer drives the robot.
+                            ensure_manual()
+                            result = await invoke(gamepad.dispatch, controller.action, decision['action'],
+                                                  input_epoch=pad['input_epoch'], speed=decision['speed'], steps=1,
+                                                  held_input=decision['input'] if decision['mode'] == 'hold' else None,
+                                                  threshold=controller_mappings.value['deadzone'] * .7)
+                            gamepad_driver.started(decision, result)
+                            lease['last_seen'] = time.monotonic()
+                    except Exception as exc:
+                        gamepad_driver.failed(exc)
+            if stopped:
+                await assistant.cancel_all()
 
     @asynccontextmanager
     async def lifespan(app):
@@ -453,7 +534,7 @@ def create_app(controller=None, media=None):
             await invoke(media.start)
             await invoke(gamepad.start)
             task = asyncio.create_task(watchdog())
-            announcements = asyncio.create_task(controller_announcements())
+            announcements = asyncio.create_task(controller_inputs())
             try:
                 async with mcp.session_manager.run():
                     yield
@@ -482,6 +563,7 @@ def create_app(controller=None, media=None):
     app.state.settings, app.state.assistant = settings, assistant
     app.state.plans, app.state.hardware_options = plans, hardware_options
     app.state.gamepad = gamepad
+    app.state.gamepad_driver, app.state.controller_mappings = gamepad_driver, controller_mappings
 
     @app.middleware('http')
     async def private_origin(request: Request, call_next):
@@ -499,6 +581,22 @@ def create_app(controller=None, media=None):
         response.headers['Referrer-Policy'] = 'same-origin'
         response.headers['Content-Security-Policy'] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; frame-ancestors 'none'"
         return response
+
+    @app.get('/controllers/events')
+    async def controller_events(request: Request):
+        """Read-only input stream; never renews the motion lease or executes actions."""
+        async def events():
+            previous = None
+            last_sent = 0
+            while not await request.is_disconnected():
+                payload = json.dumps(controller_snapshot(), separators=(',', ':'))
+                now = time.monotonic()
+                if payload != previous or now - last_sent >= 1:
+                    yield f'data: {payload}\n\n'
+                    previous, last_sent = payload, now
+                await asyncio.sleep(.05)
+        return StreamingResponse(events(), media_type='text/event-stream',
+                                 headers={'X-Accel-Buffering': 'no', 'Cache-Control': 'no-store'})
 
     @app.get('/health')
     async def health():

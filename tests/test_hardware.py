@@ -1,4 +1,5 @@
 import math
+import threading
 import time
 
 import pytest
@@ -84,6 +85,143 @@ def test_stop_interrupts_interpolation_and_requires_rearm(controller):
     assert controller.status()['armed']
 
 
+def test_halt_stops_interpolation_and_accepts_fresh_motion(tmp_path):
+    writes = []
+    interpolating = threading.Event()
+
+    class FakeServo:
+        def __init__(self, channel):
+            self.channel = channel
+
+        def angle(self, angle):
+            writes.append((self.channel, angle))
+            if angle:
+                interpolating.set()
+
+    c = Controller(simulate=True, servo_factory=FakeServo, config_path=tmp_path/'calibration')
+    try:
+        c.start()
+        c.arm(True)
+        c.set_angles([0]*12)
+        wait_idle(c)
+        moving = c.set_angles([10]*12, speed=1)
+        assert interpolating.wait(1)
+        halted = c.halt()
+        stopped_writes = list(writes)
+        stopped_angles = halted['servo_angles']
+        wait_idle(c)
+        assert writes == stopped_writes
+        assert c.status()['servo_angles'] == stopped_angles
+        assert stopped_angles != [10]*12
+        assert halted['armed'] and not halted['estop']
+        assert halted['motion_id'] == moving['motion_id']
+        fresh = c.set_angles([1]*12, speed=80)
+        assert fresh['motion_id'] == moving['motion_id'] + 1
+        wait_idle(c)
+        assert c.status()['servo_angles'] == pytest.approx([1]*12)
+        assert len(writes) > len(stopped_writes)
+    finally:
+        c.close()
+
+
+@pytest.mark.parametrize('stopped', [False, True])
+def test_halt_never_arms_a_disarmed_controller(controller, stopped):
+    if stopped:
+        controller.stop()
+    before = controller.status()
+    halted = controller.halt()
+    assert not halted['armed']
+    assert halted['estop'] == before['estop']
+    assert halted['motion_id'] == before['motion_id'] == 0
+    with pytest.raises(RuntimeError, match='Arm'):
+        controller.set_angles([0]*12)
+    assert controller.status()['motion_id'] == 0
+
+
+def test_halt_cancels_queued_job_before_worker_runs(controller, monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+    check_cancel = controller._check_cancel
+
+    def delayed_check():
+        entered.set()
+        assert release.wait(2)
+        check_cancel()
+
+    monkeypatch.setattr(controller, '_check_cancel', delayed_check)
+    controller.arm(True)
+    controller.set_angles([0]*12)
+    try:
+        assert entered.wait(1)
+        halted = controller.halt()
+        assert halted['armed'] and halted['busy']
+        with pytest.raises(RuntimeError, match='busy'):
+            controller.set_angles([1]*12)
+        assert controller.status()['motion_id'] == 1
+    finally:
+        release.set()
+    wait_idle(controller)
+    assert controller.status()['servo_angles'] == [None]*12
+    controller.set_angles([1]*12)
+    wait_idle(controller)
+    assert controller.status()['servo_angles'] == [1]*12
+    assert controller.status()['motion_id'] == 2
+
+
+@pytest.mark.parametrize('stop_during_halt', [False, True])
+def test_halt_barrier_rejects_new_work_until_completed(controller, stop_during_halt):
+    controller.arm(True)
+    result = []
+    thread = threading.Thread(target=lambda: result.append(controller.halt()))
+    with controller._io_lock:
+        thread.start()
+        assert controller._cancel.wait(1)
+        # Synchronize with halt publishing its barrier before asserting rejection.
+        deadline = time.monotonic() + 1
+        while not controller._interrupting and time.monotonic() < deadline:
+            time.sleep(.001)
+        assert controller._interrupting
+        assert thread.is_alive()
+        with pytest.raises(RuntimeError, match='busy'):
+            controller.set_angles([0]*12)
+        with pytest.raises(RuntimeError, match='stop'):
+            controller.arm(True)
+        if stop_during_halt:
+            # stop can complete on this thread's reentrant I/O lock while
+            # halt is still waiting; halt must preserve the resulting estop.
+            controller.stop()
+    thread.join(1)
+    assert not thread.is_alive()
+    assert result[0]['armed'] is not stop_during_halt
+    assert result[0]['estop'] is stop_during_halt
+    if stop_during_halt:
+        with pytest.raises(RuntimeError, match='Arm'):
+            controller.set_angles([0]*12)
+        controller.arm(True)
+    controller.set_angles([0]*12)
+    wait_idle(controller)
+
+
+def test_stop_cannot_lose_cancellation_to_concurrent_submit(controller):
+    controller.arm(True)
+    result = []
+    thread = threading.Thread(target=lambda: result.append(controller.stop()))
+    # Hold the state lock so submit runs between stop's early cancellation
+    # signal and its state update, reproducing the event-clear race.
+    with controller._lock:
+        thread.start()
+        assert controller._cancel.wait(1)
+        controller.set_angles([0]*12)
+    thread.join(1)
+    assert not thread.is_alive()
+    assert controller._cancel.is_set()
+    wait_idle(controller)
+    assert result[0]['estop'] and not result[0]['armed']
+    controller.halt()
+    with pytest.raises(RuntimeError, match='Arm'):
+        controller.set_angles([1]*12)
+
+
 def test_pwm_directions_offsets_and_reported_angles(tmp_path):
     written = {}
     class FakeServo:
@@ -152,6 +290,10 @@ def test_error_disarms_controller(tmp_path):
         assert not status['armed']
         assert status['estop']
         assert 'I2C failure' in status['action_error']
+        halted = c.halt()
+        assert halted['action_error'] == status['action_error']
+        assert halted['errors'] == status['errors']
+        assert not halted['armed'] and halted['estop']
     finally:
         c.close()
 

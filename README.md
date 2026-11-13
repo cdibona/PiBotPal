@@ -230,13 +230,13 @@ or low light. Capture start is independent of microphone consent and arming.
 
 [Admin → Controllers](https://spiderbot.tail689a35.ts.net/#admin/controllers) recognizes
 Linux USB joystick devices, shows their stable path and USB identity, and
-monitors axes/buttons live while that section is visible. The attached receiver identifies as `2563:0575`,
+streams axes/buttons live while that section is visible. The attached receiver identifies as `2563:0575`,
 `USB WirelessGamepad` (ShanWan), with six axes and thirteen buttons. This is
 consistent with a PS2-style controller receiver; the USB identity does not prove
 the retail brand or that a wireless handset is paired. Move a stick or press a
 button to confirm activity. `controller_get` and `get_status.gamepad` expose the
-same input state. Unplug/reconnect and permission errors are handled without
-mapping sticks to robot motion. Controller arming is separate from system motion arming.
+same input state, raw readings, recent events, saved mappings and control readiness.
+Controller arming is separate from system motion arming.
 The monitor uses the Linux joystick interface directly, without a new library.
 
 For receiver `2563:0575` with the original sequential HID button codes, PiBotPal
@@ -251,13 +251,50 @@ The gamepad icon beside **Arm motion** and a fresh **Start** button press both
 toggle controller arming. The icon is filled when armed and connected, outlined
 when disarmed, and unavailable when no receiver is attached. Controller input is
 armed by default; the choice persists in private `controller.json` across page
-reloads, service restarts, and unplug/replug. Disarming clears ordinary input
-values but keeps listening to Start so the handset can re-arm itself. Startup
+reloads, service restarts, and unplug/replug. Disarming blocks mapped actions
+but keeps the raw input monitor and Start available. Startup
 button states, held/repeated presses and rapid switch bounce never toggle arming.
 `controller_set_enabled(enabled)` provides the same shared setting over MCP;
 `controller_get` and `get_status.gamepad` report `enabled` (saved preference),
 `armed` (enabled and connected), `attached`, `connected`, and `start_listening`.
-Sticks and driving buttons are not yet mapped to movement.
+
+The Controllers page shows a gamepad diagram, numerical axes, and a recent input
+log. The read-only `/controllers/events` stream updates at up to 20 Hz; 350 ms
+tap highlights preserve short presses even after release. Monitoring remains
+available while disarmed. Hidden pages close the stream; failed streams fall
+back to 100 ms MCP polling without overlapping requests.
+
+Default action mappings are:
+
+| Input | Action |
+| --- | --- |
+| D-pad or left stick forward/back | Forward/backward while held |
+| D-pad or left stick left/right | Turn left/right while held |
+| A / × (South) | Stand |
+| B / ○ (East) | Sit |
+| X / □ (West) | Wave |
+| Y / △ (North) | Ready |
+| Select | Stop and disarm |
+| Start | Toggle controller arming (reserved) |
+
+Every other input can be assigned or left unassigned in the mapping editor.
+Walking and turning support **Press** (one bounded cycle) or **Hold** (repeat
+one cycle at a time); poses and gestures execute once per fresh press. Speed
+is adjustable from 1–80 and stick dead zone from 0.15–0.8. MCP tools
+`controller_save_mapping` and `controller_reset_mapping` share the same private
+`controller-mapping.json`. Saving/resetting does not start motion.
+
+Mapped movement requires both controller arming and system **Arm motion**.
+After arming, reconnecting, or changing a mapping, release mapped controls to
+neutral before the next action. Releasing a held direction cancels its current
+motion while retaining system arming; controller disarm or USB disconnect also
+cancels its motion. Unrelated manual or planned actions are not canceled by a
+controller release. Conflicting directions stop controller motion, and a
+continuous hold is limited to ten seconds before release is required: USB
+receiver presence alone cannot detect a lost wireless handset. Busy actions
+are not queued for later playback. Start remains separate from system arming;
+Select and the header STOP cancel work and disarm. MCP `halt` cancels manual
+motion while preserving arming, unlike `stop`.
 
 Explicit controller state changes say **controller armed** or **controller
 disarmed** through the robot speaker. The system **Arm motion** button and MCP

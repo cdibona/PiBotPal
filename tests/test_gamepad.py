@@ -390,3 +390,124 @@ def test_failed_start_preference_save_keeps_state_and_monitor_usable(monkeypatch
     assert not monitor.status()['armed'] and monitor.drain_notifications()==[{'armed':False}]
     assert monitor.status()['error'] is None
     monitor.close()
+
+
+def test_raw_inputs_remain_visible_while_disarmed_and_init_never_dispatches():
+    monitor = start_monitor()
+    monitor.set_enabled(False)
+    monitor._events(EVENT.pack(0, 20000, 0x82, 0)+EVENT.pack(0, 1, 0x81, 0))
+    state = monitor.status()
+    assert state['raw_axes'] == [pytest.approx(20000/32767), 0.]
+    assert state['raw_buttons'] == [True, False, False]
+    assert state['axes'] == [0., 0.] and state['buttons'] == [False]*3
+    assert state['input_revision'] == 0 and state['recent_events'] == []
+    assert monitor.drain_input_events() == []
+    monitor._events(EVENT.pack(1, -32768, 2, 1)+EVENT.pack(2, 0, 1, 0))
+    state = monitor.status()
+    assert state['raw_axes'][1] == -1. and state['raw_buttons'][0] is False
+    assert state['axes'] == [0., 0.] and state['buttons'] == [False]*3
+    assert state['events_seen'] == 0 and state['last_event_at'] is None
+    assert state['input_revision'] == 2
+    assert [(e['kind'], e['value']) for e in state['recent_events']] == [('axis', -1.), ('button', False)]
+    assert len(monitor.drain_input_events()) == 2
+    # Re-arming does not invent neutral raw input or replay old queued actions.
+    monitor.set_enabled(True)
+    assert monitor.status()['raw_axes'] == state['raw_axes']
+    assert monitor.status()['axes'] == [0., 0.]
+    assert monitor.drain_input_events() == []
+    monitor.close()
+
+
+def test_fast_press_release_and_partial_packets_have_independent_ordered_history():
+    monitor = start_monitor()
+    press, release = EVENT.pack(1, 1, 1, 0), EVENT.pack(2, 0, 1, 0)
+    monitor._events(press[:3])
+    assert monitor.status()['input_revision'] == 0
+    monitor._events(press[3:]+release)
+    state = monitor.status()
+    assert state['raw_buttons'][0] is False and state['buttons'][0] is False
+    events = monitor.drain_input_events()
+    assert [(e['seq'], e['kind'], e['index'], e['name'], e['value']) for e in events] == [
+        (1, 'button', 0, 'South', True), (2, 'button', 0, 'South', False)]
+    assert all(e['epoch'] == state['input_epoch'] and e['time'] > 0 for e in events)
+    assert events == state['recent_events'] and monitor.drain_input_events() == []
+    events[0]['name'] = 'changed by consumer'
+    state['recent_events'][1]['value'] = True
+    assert monitor.status()['recent_events'][0]['name'] == 'South'
+    assert monitor.status()['recent_events'][1]['value'] is False
+    # Unknown kinds and out-of-range indices cannot advance the event stream.
+    monitor._events(EVENT.pack(3, 1, 3, 0)+EVENT.pack(4, 1, 1, 200)+EVENT.pack(5, 1, 2, 200))
+    assert monitor.status()['input_revision'] == 2 and monitor.drain_input_events() == []
+    monitor.close()
+
+
+def test_input_epoch_invalidates_stale_holds_but_revision_survives_reconnect():
+    monitor = start_monitor()
+    connected_epoch = monitor.status()['input_epoch']
+    monitor._events(EVENT.pack(1, 1, 1, 0))
+    monitor.set_enabled(False)
+    disabled = monitor.status()
+    assert disabled['input_epoch'] == connected_epoch+1
+    assert disabled['raw_buttons'][0] is True and disabled['buttons'][0] is False
+    assert disabled['input_revision'] == 1 and len(disabled['recent_events']) == 1
+    assert monitor.drain_input_events() == []
+    monitor.set_enabled(False)
+    assert monitor.status()['input_epoch'] == disabled['input_epoch']
+    monitor._events(EVENT.pack(2, 0, 1, 0))
+    monitor._disconnect()
+    disconnected = monitor.status()
+    assert disconnected['input_epoch'] == disabled['input_epoch']+1
+    assert disconnected['raw_axes'] == [] and disconnected['raw_buttons'] == []
+    assert disconnected['recent_events'] == [] and disconnected['input_revision'] == 2
+    assert monitor.drain_input_events() == []
+    monitor._refresh()
+    assert monitor.status()['input_epoch'] == disconnected['input_epoch']+1
+    monitor._events(EVENT.pack(0, 1, 0x81, 0))
+    assert monitor.status()['raw_buttons'][0] is True and monitor.drain_input_events() == []
+    monitor._events(EVENT.pack(3, 0, 1, 0))
+    assert monitor.drain_input_events()[0]['seq'] == 3
+    monitor.close()
+
+
+def test_start_toggle_preserves_raw_edge_and_sets_event_epoch_after_transition():
+    now = [1.0]
+    monitor = start_monitor(clock=lambda:now[0])
+    monitor._events(EVENT.pack(0, 0, 0x81, 1)+EVENT.pack(1, 1, 1, 0))
+    old_epoch = monitor.status()['input_epoch']
+    monitor._events(EVENT.pack(2, 1, 1, 1))
+    state = monitor.status()
+    assert state['input_epoch'] == old_epoch+1 and not state['armed']
+    assert state['raw_buttons'] == [True, True, False] and state['buttons'] == [False]*3
+    assert len(state['recent_events']) == 2
+    events = monitor.drain_input_events()
+    assert len(events) == 1 and events[0]['name'] == 'Start' and events[0]['value'] is True
+    assert events[0]['seq'] == 2 and events[0]['epoch'] == state['input_epoch']
+    assert monitor.drain_notifications() == [{'armed':False}]
+    now[0] = 2.0
+    monitor._events(EVENT.pack(3, 0, 1, 1)+EVENT.pack(4, 1, 1, 1))
+    assert monitor.status()['armed'] and monitor.status()['input_epoch'] == old_epoch+2
+    assert monitor.drain_notifications() == [{'armed':True}]
+    monitor.close()
+
+
+def test_raw_history_is_bounded_without_losing_dispatch_edges():
+    monitor = start_monitor()
+    monitor._events(b''.join(EVENT.pack(n, n, 2, 0) for n in range(100)))
+    state = monitor.status()
+    assert state['input_revision'] == 100 and len(state['recent_events']) == 64
+    assert state['recent_events'][0]['seq'] == 37
+    assert len(monitor.drain_input_events()) == 100
+    assert len(monitor.status()['recent_events']) == 64
+    monitor.close()
+
+
+def test_dispatch_queue_overflow_changes_epoch_so_consumers_drop_stale_holds():
+    monitor = start_monitor()
+    epoch = monitor.status()['input_epoch']
+    monitor._events(b''.join(EVENT.pack(n, n, 2, 0) for n in range(513)))
+    state = monitor.status()
+    assert state['input_epoch'] == epoch+1 and state['input_revision'] == 513
+    events = monitor.drain_input_events()
+    assert len(events) == 1 and events[0]['seq'] == 513 and events[0]['epoch'] == epoch+1
+    assert len(state['recent_events']) == 64
+    monitor.close()

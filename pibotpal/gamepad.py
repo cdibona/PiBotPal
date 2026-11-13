@@ -2,7 +2,8 @@
 """USB joystick discovery, controller arming, and Linux input monitoring.
 
 A USB receiver being present does not establish that its wireless handset is
-paired. This module never grabs a device, changes its mode, or commands motion.
+paired. Input monitoring never grabs a device or changes its mode. The dispatch
+guard serializes externally supplied action submissions against disarming.
 """
 from __future__ import annotations
 
@@ -139,13 +140,16 @@ class GamepadMonitor:
         self._last_start_toggle = None
         self._arming_error = None
         self._notifications = deque(maxlen=64)
+        self._input_events = deque(maxlen=512)
         self._state = {'devices':[], 'active_device_id':None, 'connected':False,
                        'enabled':enabled, 'attached':False,
                        'axes':[], 'buttons':[], 'axis_names':[], 'button_names':[],
+                       'raw_axes':[], 'raw_buttons':[], 'input_revision':0,
+                       'input_epoch':0, 'recent_events':[],
                        'button_codes':[], 'button_mapping':None,
                        'last_event_at':None, 'events_seen':0, 'error':None,
                        'motion_enabled':False,
-                       'note':'Start toggles controller arming. Disarming keeps Start listening and ignores other inputs. Receiver presence does not verify wireless pairing; no robot movement is mapped.'}
+                       'note':'Start toggles controller arming. Disarming keeps live input visible while blocking its actions. Receiver presence does not verify wireless pairing.'}
 
     def start(self):
         with self._lock:
@@ -169,6 +173,27 @@ class GamepadMonitor:
             events = list(self._notifications)
             self._notifications.clear()
             return events
+
+    def drain_input_events(self):
+        """Drain valid, non-initial input edges independently of UI history.
+
+        Consumers must reject events whose epoch differs from the current
+        status, and reset held inputs whenever that epoch changes.
+        """
+        with self._lock:
+            events = list(self._input_events)
+            self._input_events.clear()
+            return events
+
+    def read_input(self):
+        """Take one coherent snapshot and its edges for the action dispatcher."""
+        with self._lock:
+            return self.status(), self.drain_input_events()
+
+    def _invalidate_input(self):
+        """Called under the state lock when queued actions are no longer valid."""
+        self._state['input_epoch'] += 1
+        self._input_events.clear()
 
     def _save_enabled(self, enabled):
         if self._settings_path is None:
@@ -204,6 +229,7 @@ class GamepadMonitor:
                 changed = self._state['enabled'] != enabled
                 self._state['enabled'] = enabled
                 if changed:
+                    self._invalidate_input()
                     self._state.update(axes=[0.0] * len(self._state['axes']),
                                        buttons=[False] * len(self._state['buttons']),
                                        last_event_at=None, events_seen=0)
@@ -214,6 +240,29 @@ class GamepadMonitor:
                 with self._lock:
                     self._notifications.append({'armed': state['armed']})
             return state
+
+    def dispatch(self, operation, *args, input_epoch, held_input=None, threshold=.35, **kwargs):
+        """Submit a bounded action only while this exact input session is armed.
+
+        The operation must only enqueue work, never wait for physical motion.
+        Sharing the device lock with Start/disconnect makes the final permission
+        check atomic with submission, even when the app's worker starts late.
+        """
+        with self._io_lock:
+            with self._lock:
+                if (self._stop.is_set() or not self._state['enabled'] or not self._state['connected']
+                        or self._state['input_epoch'] != input_epoch):
+                    raise RuntimeError('Controller input changed before action submission')
+                if held_input:
+                    kind, name, *direction = held_input.split(':')
+                    names = self._state['button_names' if kind == 'button' else 'axis_names']
+                    raw = self._state['raw_buttons' if kind == 'button' else 'raw_axes']
+                    value = raw[names.index(name)] if name in names else 0
+                    if kind == 'axis' and direction == ['-']:
+                        value = -value
+                    if value < threshold:
+                        raise RuntimeError('Controller direction was released before action submission')
+            return operation(*args, **kwargs)
 
     def _disconnect(self, error=None):
         with self._io_lock:
@@ -226,7 +275,9 @@ class GamepadMonitor:
             self._start_down = self._start_ready = False
             self._last_start_toggle = None
             with self._lock:
+                self._invalidate_input()
                 self._state.update(connected=False,active_device_id=None,axes=[],buttons=[],
+                                   raw_axes=[],raw_buttons=[],recent_events=[],
                                    axis_names=[],button_names=[],button_codes=[],button_mapping=None,
                                    last_event_at=None,events_seen=0,error=error)
 
@@ -257,8 +308,11 @@ class GamepadMonitor:
                     self._start_down = self._start_ready = False
                     self._last_start_toggle = None
                     with self._lock:
+                        self._invalidate_input()
                         self._state.update(connected=True,active_device_id=device['id'],error=None,
                                            axes=data['axes'],buttons=data['buttons'],
+                                           raw_axes=list(data['axes']),raw_buttons=list(data['buttons']),
+                                           recent_events=[],
                                            axis_names=data['axis_names'],button_names=data['button_names'],
                                            button_codes=data.get('button_codes', []),
                                            button_mapping=data['button_mapping'],
@@ -284,6 +338,21 @@ class GamepadMonitor:
                 del self._buffer[:EVENT.size]
                 initial = bool(kind & 0x80)
                 kind &= ~0x80
+                if kind == 1 and number < len(self._state['buttons']):
+                    event_kind, field, names = 'button', 'raw_buttons', 'button_names'
+                    normalized = bool(value)
+                    filtered = 'buttons'
+                elif kind == 2 and number < len(self._state['axes']):
+                    event_kind, field, names = 'axis', 'raw_axes', 'axis_names'
+                    normalized = max(-1.0, min(1.0, value/32767))
+                    filtered = 'axes'
+                else:
+                    continue
+                # Keep independent arrays, including when tests/simulation
+                # supply capabilities directly without opening a receiver.
+                if len(self._state[field]) != len(self._state[filtered]):
+                    self._state[field] = list(self._state[filtered])
+                self._state[field][number] = normalized
                 is_start = (kind == 1 and number < len(self._state['button_names'])
                             and self._state['button_names'][number] == 'Start')
                 if is_start:
@@ -308,14 +377,27 @@ class GamepadMonitor:
                     if not initial:
                         self._state['events_seen'] += 1
                         self._state['last_event_at'] = time.time()
+                if not initial:
+                    # Losing an edge could leave an action held. Overflow
+                    # invalidates the consumer's holds instead of dropping
+                    # just the oldest release event silently.
+                    if len(self._input_events) == self._input_events.maxlen:
+                        self._invalidate_input()
+                    self._state['input_revision'] += 1
+                    labels = self._state[names]
+                    event = {'seq':self._state['input_revision'], 'time':time.time(),
+                             'kind':event_kind, 'index':number,
+                             'name':labels[number] if number < len(labels) else f'{event_kind.title()} {number}',
+                             'value':normalized, 'epoch':self._state['input_epoch']}
+                    # Separate records ensure draining/mutating the dispatch
+                    # queue cannot alter the independent read-only UI history.
+                    self._input_events.append(dict(event))
+                    self._state['recent_events'].append(event)
+                    del self._state['recent_events'][:-64]
                 if not self._state['enabled']:
                     continue
-                changed = False
-                if kind == 1 and number < len(self._state['buttons']):
-                    self._state['buttons'][number]=bool(value);changed=True
-                elif kind == 2 and number < len(self._state['axes']):
-                    self._state['axes'][number]=max(-1.0,min(1.0,value/32767));changed=True
-                if changed and not initial and not is_start:
+                self._state[filtered][number] = normalized
+                if not initial and not is_start:
                     self._state['events_seen']+=1
                     self._state['last_event_at']=time.time()
 

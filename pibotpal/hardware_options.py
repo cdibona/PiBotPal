@@ -23,7 +23,7 @@ DEFAULTS = {
  'rear_camera': ('Rear USB webcam', 'camera', {'enabled': False, 'device': '', 'width': 640, 'height': 480, 'fps': 10, 'x_mm': 0, 'y_mm': 0, 'z_mm': 0, 'yaw_deg': 180}, 'Provisioning only: USB capture driver and rear feed are not implemented yet. Prefer /dev/v4l/by-id paths.'),
  'lidar': ('SLAM lidar', 'range', {'enabled': False, 'model': 'RPLIDAR C1', 'device': '', 'baud': 460800, 'x_mm': 0, 'y_mm': 0, 'z_mm': 0, 'yaw_deg': 0}, 'Provisioning only: RPLIDAR C1 USB serial, 460800 baud; use SLAMTEC BSD-2-Clause SDK. Scan timestamps and mounting transform are required; lidar alone does not provide reliable leg odometry.'),
  'coral': ('Coral USB Edge TPU', 'accelerator', {'enabled': False, 'connection': 'usb', 'model_path': ''}, 'Provisioning only: compiled int8 TensorFlow Lite perception models; not an accelerator for llama.cpp text LLMs. Runtime integration pending.'),
- 'gamepad': ('USB PS2-style controller', 'input', {'enabled': False}, 'Input monitor with Start-button controller arming. USB presence does not prove handset pairing. Sticks and buttons are not mapped to robot motion.'),
+ 'gamepad': ('USB PS2-style controller', 'input', {'enabled': False}, 'Live input monitor and editable action mappings in Controllers. Start toggles controller arming; mapped movement also requires system motion arming.'),
  'imu': ('Body IMU', 'orientation', {'enabled': False, 'model': '', 'bus': '/dev/i2c-1', 'address': 104, 'yaw_deg': 0}, 'Provisioning only: no IMU driver identified. World orientation remains unavailable.'),
 }
 
@@ -100,7 +100,7 @@ class HardwareOptions:
      notes+=' Use controller_set_enabled to change USB input; the setting is shared across clients.'
     devices.append({'id':key,'name':name,'kind':kind,'configured':bool(options.get('enabled')),
        'enabled':options['enabled'],'detected':detected[key],'options':options,
-       'status':(('no receiver connected' if not gamepad.get('connected') else 'controller armed; driving not mapped' if options['enabled'] else 'controller disarmed; Start remains active') if key=='gamepad' else 'active driver' if active else 'configuration only; driver pending'),'notes':notes})
+       'status':(('no receiver connected' if not gamepad.get('connected') else gamepad.get('control', {}).get('message', 'controller armed; action mappings available') if options['enabled'] else 'controller disarmed; input monitor and Start remain active') if key=='gamepad' else 'active driver' if active else 'configuration only; driver pending'),'notes':notes})
   mem={}
   try:
    mem={line.split(':')[0]:int(line.split()[1])//1024 for line in Path('/proc/meminfo').read_text().splitlines() if line.startswith(('MemTotal:','MemAvailable:'))}
