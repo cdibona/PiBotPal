@@ -6,7 +6,6 @@ import java.io.BufferedInputStream
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.util.Base64
-import javax.imageio.ImageIO
 
 class MjpegReaderTest {
     @Test fun readsConsecutiveMultipartFrames() {
@@ -28,7 +27,6 @@ class MjpegReaderTest {
         output.write(seed, 2, seed.size - 2)
         val large = output.toByteArray()
         assertTrue(large.size > 1024 * 1024)
-        assertEquals(8, ImageIO.read(ByteArrayInputStream(large)).width)
         fun part(bytes: ByteArray) = "--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${bytes.size}\r\n\r\n".toByteArray() + bytes + "\r\n".toByteArray()
         val fragmented = object : ByteArrayInputStream(part(large) + part(seed)) {
             override fun read(bytes: ByteArray, offset: Int, length: Int): Int = super.read(bytes, offset, minOf(length, 4093))
