@@ -9,8 +9,8 @@ export function initControllerToggle({call, notice, onChanged}) {
     const active = known && state.enabled && state.connected;
     const label = !known ? 'USB controller unavailable — robot disconnected'
       : !attached ? 'No USB controller attached'
-      : !state.enabled ? 'USB controller off — click to enable'
-      : active ? 'USB controller on — click to disable'
+      : !state.enabled ? 'Controller disarmed — press Start or click to arm'
+      : active ? 'Controller armed — press Start or click to disarm'
       : state.error ? 'USB controller unavailable — click to disable'
       : 'USB controller connecting — click to disable';
     button.disabled = !known || !attached || pending;

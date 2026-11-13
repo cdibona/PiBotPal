@@ -9,9 +9,9 @@ export function initControllers({call}) {
       <div class="panel-heading"><h2>USB gamepad</h2><span id="controller-status" class="tag">NOT CHECKED</span></div>
       <div class="panel-body">
         <p id="controller-note" class="caption">Connect a USB gamepad or its wireless receiver to the Pi.</p>
-        <div class="controller-summary"><div><span>Input activity</span><strong id="controller-activity">Waiting for input</strong></div><div><span>Control mode</span><strong>Input monitor</strong></div></div>
+        <div class="controller-summary"><div><span>Input activity</span><strong id="controller-activity">Waiting for input</strong></div><div><span>Controller arming</span><strong id="controller-armed-state">Waiting for receiver</strong></div></div>
         <div class="controller-input-grid"><div><h3>Sticks & axes</h3><div id="controller-axes"><p class="caption">No axes available.</p></div></div><div><h3>Buttons</h3><div id="controller-buttons" class="controller-buttons"><p class="caption">No buttons available.</p></div></div></div>
-        <p class="controller-hint">Motion mapping is not configured. Controller inputs are displayed here and do not move the robot.</p>
+        <p class="controller-hint">Press Start to arm or disarm the controller. Arming changes are spoken through the robot’s speaker. System motion still has its own Arm motion control; driving with sticks is not mapped yet.</p>
         <p id="controller-error" class="notice error" role="status" hidden></p>
         <details class="controller-device-details"><summary>Receiver details</summary><div id="controller-devices" class="controller-devices"><p class="caption">No receiver checked yet.</p></div><p id="controller-driver-note" class="caption"></p></details>
       </div>
@@ -26,9 +26,10 @@ export function initControllers({call}) {
   };
   function render(data) {
     const disabled = data.enabled === false;
-    $('controller-status').textContent = disabled ? 'INPUT DISABLED' : data.connected ? 'RECEIVER CONNECTED' : 'NOT CONNECTED';
-    $('controller-status').className = 'tag ' + (data.connected ? 'teal' : '');
-    $('controller-note').textContent = disabled ? 'Controller input is switched off. Use the gamepad icon beside Arm motion to reconnect.' : data.connected ? 'USB input is available. Watch the controls below to verify that your sticks and buttons respond.' : 'Connect a USB gamepad or its wireless receiver to the Pi.';
+    $('controller-status').textContent = disabled ? 'CONTROLLER DISARMED' : data.connected ? 'RECEIVER CONNECTED' : 'NOT CONNECTED';
+    $('controller-status').className = 'tag ' + (data.connected && !disabled ? 'teal' : '');
+    $('controller-note').textContent = disabled ? 'Ordinary controller input is paused. Start remains active so you can arm it again; the header gamepad icon does the same.' : data.connected ? 'USB input is available. Watch the controls below to verify that your sticks and buttons respond.' : 'Connect a USB gamepad or its wireless receiver to the Pi.';
+    $('controller-armed-state').textContent = !data.connected ? 'No receiver connected' : disabled ? 'Disarmed · Start still active' : 'Armed · Start to disarm';
     $('controller-driver-note').textContent = data.note || 'A detected USB receiver does not confirm that its wireless handset is paired.';
     const events = Number(data.events_seen) || 0;
     $('controller-activity').textContent = disabled ? 'Input paused' : !data.connected ? 'No controller connected' : events ? `${events} input event${events === 1 ? '' : 's'} received` : 'Move a stick or press a button';

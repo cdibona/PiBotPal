@@ -291,3 +291,59 @@ def test_video_does_not_retransmit_unchanged_high_resolution_frames(client, monk
         assert request.polls == 4
         await response.body_iterator.aclose()
     asyncio.run(check())
+
+
+def test_system_arming_announcements_follow_successful_state_changes(client, monkeypatch):
+    spoken=[]
+    monkeypatch.setattr(client.app.state.media,'announce',spoken.append)
+    for armed in (True,True,False,False):
+        response=call(client,'arm',armed=armed)
+        assert not response.get('isError')
+    assert spoken==['system armed','system disarmed']
+    state=call(client,'get_status')['structuredContent']
+    assert not state['armed'] and state['servo_angles']==[None]*12
+    assert state['microphone']['muted']
+
+
+def test_failed_arming_is_silent_and_speech_failure_does_not_revoke_arming(client,monkeypatch):
+    spoken=[]
+    monkeypatch.setattr(client.app.state.media,'announce',spoken.append)
+    controller=client.app.state.controller
+    original=controller.arm
+    def reject(armed):raise RuntimeError('Arming rejected')
+    monkeypatch.setattr(controller,'arm',reject)
+    assert call(client,'arm',armed=True)['isError']
+    assert spoken==[] and not controller.status()['armed']
+    monkeypatch.setattr(controller,'arm',original)
+    def unavailable(text):raise OSError('No speaker')
+    monkeypatch.setattr(client.app.state.media,'announce',unavailable)
+    result=call(client,'arm',armed=True)
+    assert result['structuredContent']['armed']
+    assert controller.status()['servo_angles']==[None]*12
+
+
+def test_controller_start_and_mcp_arming_share_announcements_without_system_motion(client,monkeypatch):
+    from pibotpal.gamepad import EVENT
+    spoken=[]
+    monkeypatch.setattr(client.app.state.media,'announce',spoken.append)
+    monitor=client.app.state.gamepad
+    with monitor._lock:
+        monitor._state.update(connected=True,attached=True,buttons=[False],button_names=['Start'])
+    # Connecting with Start held must not trigger an arming action.
+    monitor._events(EVENT.pack(1,1,0x81,0))
+    monitor._events(EVENT.pack(2,0,1,0))
+    assert spoken==[]
+    monitor._events(EVENT.pack(3,1,1,0))
+    deadline=time.monotonic()+1
+    while not spoken and time.monotonic()<deadline:time.sleep(.01)
+    assert spoken==['controller disarmed']
+    result=call(client,'controller_set_enabled',enabled=True)['structuredContent']
+    assert result['armed']
+    deadline=time.monotonic()+1
+    while len(spoken)<2 and time.monotonic()<deadline:time.sleep(.01)
+    assert spoken==['controller disarmed','controller armed']
+    call(client,'controller_set_enabled',enabled=True)
+    time.sleep(.08)
+    assert len(spoken)==2
+    state=call(client,'get_status')['structuredContent']
+    assert not state['armed'] and state['servo_angles']==[None]*12 and state['microphone']['muted']

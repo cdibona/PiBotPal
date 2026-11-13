@@ -134,7 +134,7 @@ def test_runtime_device_removal_is_reported_and_does_not_hold_input():
     monitor.close()
 
 
-def test_disable_closes_input_and_discards_held_and_partial_events(tmp_path):
+def test_disarm_keeps_start_connection_and_clears_ordinary_inputs(tmp_path):
     closed=[]; opened=[]
     def opener(path): opened.append(path); return 7
     monitor=GamepadMonitor(discover=lambda:[device()],opener=opener,
@@ -144,13 +144,14 @@ def test_disable_closes_input_and_discards_held_and_partial_events(tmp_path):
     assert monitor.status()['enabled'] and monitor.status()['attached'] and monitor.status()['connected']
     monitor._events(EVENT.pack(1,1,1,0)+EVENT.pack(2,32767,2,0)+EVENT.pack(3,1,1,1)[:4])
     disabled=monitor.set_enabled(False)
-    assert disabled['attached'] and not disabled['enabled'] and not disabled['connected']
-    assert disabled['axes']==[] and disabled['buttons']==[] and disabled['events_seen']==0
-    assert disabled['last_event_at'] is None and closed==[7] and not monitor._buffer
-    monitor._events(EVENT.pack(4,1,1,0));monitor._refresh()
+    assert disabled['attached'] and not disabled['enabled'] and disabled['connected'] and not disabled['armed']
+    assert disabled['axes']==[0.,0.] and disabled['buttons']==[False,False] and disabled['events_seen']==0
+    assert disabled['last_event_at'] is None and closed==[]
+    # Preserve framing of a partially received ordinary event while disarmed.
+    monitor._events(EVENT.pack(3,1,1,1)[4:]+EVENT.pack(4,1,1,0));monitor._refresh()
     assert len(opened)==1 and monitor.status()['events_seen']==0
     enabled=monitor.set_enabled(True)
-    assert enabled['enabled'] and enabled['connected'] and len(opened)==2
+    assert enabled['enabled'] and enabled['connected'] and enabled['armed'] and len(opened)==1
     assert enabled['axes']==[0.,0.] and enabled['buttons']==[False,False]
     monitor.close()
 
@@ -165,11 +166,12 @@ def test_disabled_preference_survives_restart_and_hotplug(tmp_path):
     assert path.stat().st_mode & 0o777==0o600
     restored=GamepadMonitor(discover=lambda:list(devices),opener=opener,close_fd=lambda fd:None,
                            capability_reader=fake_caps,settings_path=path)
-    restored._refresh();assert restored.status()['attached'] and not opened
+    restored._refresh();assert restored.status()['attached'] and restored.status()['connected']
+    assert not restored.status()['armed'] and len(opened)==2
     devices.clear();restored._refresh();assert not restored.status()['attached']
     devices.append(device());restored._refresh()
-    assert restored.status()['attached'] and not restored.status()['enabled'] and not opened
-    restored.set_enabled(True);assert restored.status()['connected'] and len(opened)==1
+    assert restored.status()['attached'] and not restored.status()['enabled'] and len(opened)==3
+    restored.set_enabled(True);assert restored.status()['connected'] and restored.status()['armed'] and len(opened)==3
     restored.close()
 
 
@@ -184,7 +186,7 @@ def test_enable_without_receiver_keeps_auto_connection_preference():
     monitor.close()
 
 
-def test_inflight_poll_cannot_read_after_disable_or_reused_descriptor():
+def test_inflight_poll_cannot_read_after_hotplug_reuses_descriptor():
     polling=threading.Event(); release=threading.Event();stale_returned=threading.Event()
     reads=[];closed=[]; polls=0
     def poll(fd,timeout):
@@ -203,9 +205,9 @@ def test_inflight_poll_cannot_read_after_disable_or_reused_descriptor():
         assert polling.wait(1)
         # The second open deliberately reuses fd 7; generation, not integer
         # descriptor equality, must reject the old poll's readiness result.
-        monitor.set_enabled(False)
+        monitor._disconnect()
         assert closed==[7] and not monitor.status()['connected']
-        monitor.set_enabled(True)
+        monitor._refresh()
         release.set();assert stale_returned.wait(1)
         deadline=time.monotonic()+1
         while polls<2 and time.monotonic()<deadline:time.sleep(.005)
@@ -226,3 +228,90 @@ def test_bad_preference_and_failed_save_do_not_silently_enable_input(tmp_path,mo
     monkeypatch.setattr(monitor,'_save_enabled',failed)
     with pytest.raises(OSError,match='disk full'):monitor.set_enabled(False)
     assert monitor.status()['enabled'] and not path.exists()
+
+
+def start_monitor(tmp_path=None, *, clock=None):
+    def caps(fd):
+        data=fake_caps(fd)
+        data.update(buttons=[False,False,False],button_names=['South','Start','East'])
+        return data
+    monitor=GamepadMonitor(discover=lambda:[device()],opener=lambda p:7,close_fd=lambda fd:None,
+                           capability_reader=caps,settings_path=tmp_path/'controller.json' if tmp_path else None,
+                           monotonic=clock)
+    monitor._refresh()
+    return monitor
+
+
+def test_start_toggles_disarm_and_rearm_with_listener_still_connected(tmp_path):
+    now=[1.0];monitor=start_monitor(tmp_path,clock=lambda:now[0])
+    assert monitor.status()['armed'] and monitor.status()['start_listening']
+    assert monitor.drain_notifications()==[]
+    # Released initialization arms edge detection, but is never a toggle.
+    monitor._events(EVENT.pack(1,0,0x81,1))
+    press=EVENT.pack(2,1,1,1)
+    monitor._events(press[:3]);assert monitor.status()['armed']
+    monitor._events(press[3:])
+    assert not monitor.status()['armed'] and monitor.status()['connected']
+    assert monitor.drain_notifications()==[{'armed':False}]
+    monitor._events(EVENT.pack(3,32767,2,0)+EVENT.pack(4,1,1,0))
+    assert monitor.status()['axes']==[0.,0.] and monitor.status()['buttons']==[False]*3
+    # A held Start, regardless of elapsed time, cannot arm again.
+    now[0]=2.0;monitor._events(press)
+    assert not monitor.status()['armed'] and monitor.drain_notifications()==[]
+    monitor._events(EVENT.pack(5,0,1,1)+press)
+    assert monitor.status()['armed'] and monitor.status()['connected']
+    assert monitor.drain_notifications()==[{'armed':True}]
+    assert json.loads((tmp_path/'controller.json').read_text())['enabled'] is True
+    monitor.close()
+
+
+def test_start_ignores_initial_held_state_contact_bounce_and_hotplug():
+    now=[1.0];monitor=start_monitor(clock=lambda:now[0])
+    pressed=EVENT.pack(1,1,1,1);released=EVENT.pack(2,0,1,1)
+    monitor._events(EVENT.pack(0,1,0x81,1)+pressed)
+    assert monitor.status()['armed'] and monitor.drain_notifications()==[]
+    monitor._events(released+pressed)
+    assert not monitor.status()['armed']
+    assert monitor.drain_notifications()==[{'armed':False}]
+    now[0]=1.1;monitor._events(released+pressed)
+    assert not monitor.status()['armed'] and monitor.drain_notifications()==[]
+    now[0]=1.5;monitor._events(released+pressed)
+    assert monitor.status()['armed'] and monitor.drain_notifications()==[{'armed':True}]
+    monitor._disconnect();monitor._refresh()
+    monitor._events(EVENT.pack(0,1,0x81,1)+pressed)
+    assert monitor.status()['armed'] and monitor.drain_notifications()==[]
+    monitor.close()
+
+
+def test_explicit_transitions_only_notify_actual_arming_and_never_noops():
+    monitor=GamepadMonitor(simulate=True)
+    monitor.set_enabled(False);monitor.set_enabled(True)
+    assert not monitor.status()['armed'] and monitor.drain_notifications()==[]
+    connected=start_monitor()
+    connected.set_enabled(True);assert connected.drain_notifications()==[]
+    connected.set_enabled(False);connected.set_enabled(False)
+    assert connected.drain_notifications()==[{'armed':False}]
+    connected.set_enabled(True)
+    assert connected.drain_notifications()==[{'armed':True}]
+    connected._disconnect();connected._refresh()
+    assert connected.drain_notifications()==[]
+    connected.close()
+
+
+def test_failed_start_preference_save_keeps_state_and_monitor_usable(monkeypatch):
+    now=[1.0];monitor=start_monitor(clock=lambda:now[0])
+    def failed(enabled):raise OSError('disk full')
+    monkeypatch.setattr(monitor,'_save_enabled',failed)
+    monitor._events(EVENT.pack(0,0,0x81,1)+EVENT.pack(1,1,1,1))
+    assert monitor.status()['armed'] and monitor.status()['connected']
+    assert 'disk full' in monitor.status()['error'] and monitor.drain_notifications()==[]
+    monitor._refresh()
+    assert 'disk full' in monitor.status()['error']
+    # A held button cannot repeatedly retry a failed transition.
+    monitor._events(EVENT.pack(2,1,1,1))
+    monkeypatch.setattr(monitor,'_save_enabled',lambda enabled:None)
+    now[0]=2.0
+    monitor._events(EVENT.pack(3,0,1,1)+EVENT.pack(4,1,1,1))
+    assert not monitor.status()['armed'] and monitor.drain_notifications()==[{'armed':False}]
+    assert monitor.status()['error'] is None
+    monitor.close()

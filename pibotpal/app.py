@@ -55,6 +55,14 @@ def create_app(controller=None, media=None):
     async def invoke(fn, *args, **kwargs):
         return await asyncio.to_thread(fn, *args, **kwargs)
 
+    async def announce_arming(subject, armed):
+        # Speech runs on the speaker worker; changing control permissions never
+        # waits for synthesis or playback and does not depend on audio hardware.
+        try:
+            await invoke(media.announce, f'{subject} {"armed" if armed else "disarmed"}')
+        except Exception:
+            logging.getLogger(__name__).exception('Arming announcement could not be queued')
+
     async def call_robot_tool(name, arguments):
         result = await mcp.call_tool(name, arguments)
         if isinstance(result, tuple):
@@ -117,12 +125,16 @@ def create_app(controller=None, media=None):
         """Explicitly enable motion, or disarm and cancel all active work. No motion on arming."""
         lease['last_seen'] = time.monotonic()
         async with motion_gate:
+            was_armed = controller.status()['armed']
             if armed:
                 ensure_manual()
             if not armed:
                 await invoke(plans.stop)
                 await invoke(examples.stop)
             result = await invoke(controller.arm, armed)
+            now_armed = controller.status()['armed']
+            if was_armed != now_armed:
+                await announce_arming('system', now_armed)
         return result if isinstance(result, dict) else await get_status()
 
     @mcp.tool()
@@ -132,6 +144,7 @@ def create_app(controller=None, media=None):
             await invoke(plans.stop)
             await invoke(controller.stop)
             await invoke(examples.stop)
+            gamepad.drain_notifications()
             await invoke(media.stop)
         await assistant.cancel_all()
         return await get_status()
@@ -220,7 +233,7 @@ def create_app(controller=None, media=None):
 
     @mcp.tool()
     async def controller_set_enabled(enabled: bool) -> dict:
-        """Persist USB gamepad input on/off. Off closes input and clears held controls; never arms or moves the robot."""
+        """Persist controller arming. Start remains available while disarmed; never arms system motion or moves the robot."""
         return await invoke(gamepad.set_enabled, enabled)
 
     @mcp.tool()
@@ -406,12 +419,27 @@ def create_app(controller=None, media=None):
     async def watchdog():
         while True:
             await asyncio.sleep(1)
-            if time.monotonic() - lease['last_seen'] > 15 and (controller.status().get('armed') or media.status()['microphone']['enabled']):
-                await invoke(plans.stop)
-                await invoke(controller.stop)
+            expired = False
+            async with motion_gate:
+                if time.monotonic() - lease['last_seen'] > 15 and (controller.status().get('armed') or media.status()['microphone']['enabled']):
+                    expired = True
+                    await invoke(plans.stop)
+                    await invoke(controller.stop)
+                    await invoke(examples.stop)
+                    gamepad.drain_notifications()
+                    await invoke(media.stop)
+            if expired:
+                # Cancelled model jobs may call stop() during their cleanup.
                 await assistant.cancel_all()
-                await invoke(examples.stop)
-                await invoke(media.stop)
+
+    async def controller_announcements():
+        while True:
+            await asyncio.sleep(.05)
+            # Drain inside the same gate as STOP so queued feedback cannot
+            # escape cancellation after an emergency stop has returned.
+            async with motion_gate:
+                for event in gamepad.drain_notifications():
+                    await announce_arming('controller', event['armed'])
 
     @asynccontextmanager
     async def lifespan(app):
@@ -425,13 +453,19 @@ def create_app(controller=None, media=None):
             await invoke(media.start)
             await invoke(gamepad.start)
             task = asyncio.create_task(watchdog())
+            announcements = asyncio.create_task(controller_announcements())
             try:
                 async with mcp.session_manager.run():
                     yield
             finally:
                 task.cancel()
+                announcements.cancel()
                 try:
                     await task
+                except asyncio.CancelledError:
+                    pass
+                try:
+                    await announcements
                 except asyncio.CancelledError:
                     pass
                 await invoke(plans.stop)

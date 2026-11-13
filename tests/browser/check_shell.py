@@ -15,7 +15,8 @@ with sync_playwright() as p:
         controller = {'enabled': True, 'attached': True, 'outage': False, 'fail_set': False}
         def gamepad():
             return {'enabled': controller['enabled'], 'attached': controller['attached'],
-                    'connected': controller['enabled'] and controller['attached'],
+                    'connected': controller['attached'],
+                    'armed': controller['enabled'] and controller['attached'], 'start_listening': controller['attached'],
                     'devices': [{'id': 'usb-pad', 'name': 'USB WirelessGamepad'}] if controller['attached'] else [],
                     'axes': [], 'buttons': [], 'motion_enabled': False}
         page.on('pageerror', lambda error: errors.append(str(error)))

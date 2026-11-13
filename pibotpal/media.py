@@ -11,6 +11,7 @@ import struct
 import threading
 import time
 from datetime import datetime, timezone
+from collections import deque
 from . import audio
 from .avi import MjpegAVI
 
@@ -59,6 +60,9 @@ class Media:
         self._mic_processes = set()
         self._audio_thread = None
         self._audio_stop = threading.Event()
+        self._audio_queue = deque()
+        self._audio_active = None
+        self._audio_closed = False
         self._output_pcm = None
         self._speaker_error = None
         self._record_stop = threading.Event()
@@ -162,7 +166,12 @@ class Media:
                 self.camera(True, camera_id)
 
     def close(self):
+        with self._lock:
+            self._audio_closed = True
         self.stop()
+        thread = self._audio_thread
+        if thread and thread is not threading.current_thread():
+            thread.join(timeout=2)
         for camera_id in tuple(self._cameras):
             self.camera(False, camera_id)
 
@@ -180,7 +189,9 @@ class Media:
                                'available': audio.available() and not self.simulate,
                                'error': self._mic_error, 'listeners': len(self._mic_processes)},
                 'speaker': {'available': audio.available() and not self.simulate,
-                            'busy': bool(self._audio_thread and self._audio_thread.is_alive()), 'error': self._speaker_error},
+                            'busy': bool(self._audio_active or self._audio_queue),
+                            'queued_announcements': sum(job[0] is not None for job in self._audio_queue),
+                            'error': self._speaker_error},
                 'recording': {'active': bool(self._record_thread and self._record_thread.is_alive()),
                               'error': self._record_error},
                 'recordings': [{'name': p.name, 'url': '/recordings/' + p.name, 'bytes': p.stat().st_size} for p in recent],
@@ -456,41 +467,100 @@ class Media:
     def _speaker_ready(self):
         if self.simulate:
             raise RuntimeError('Speaker unavailable in simulation')
-        if self._audio_thread and self._audio_thread.is_alive():
+        if self._audio_closed:
+            raise RuntimeError('Speaker is closed')
+        if self._audio_active or self._audio_queue:
             raise RuntimeError('Speaker is busy')
         self._speaker_error = None
-        self._audio_stop.clear()
 
-    def _play(self, generate):
+    def _play(self, generate, cancel):
         device = None
+        amplifier = False
         try:
             data, rate, channels = generate()
-            if self._audio_stop.is_set():
-                return
             from .hat import enable_speaker
-            enable_speaker()
+            with self._lock:
+                if cancel.is_set():
+                    return
+                amplifier = True
+                enable_speaker()
             device = audio.PCM(self._speaker_device, rate=rate, channels=channels)
             with self._lock:
                 self._output_pcm = device
-                if self._audio_stop.is_set():
+                if cancel.is_set():
                     device.stop()
             device.write(data)
-            # Allow the final buffered samples to play while retaining cancellation.
-            self._audio_stop.wait(.15)
+            # Finish the actual ALSA/mixer buffer, rather than guessing its
+            # latency. PCM.stop() can interrupt this nonblocking drain.
+            device.drain()
         except Exception as exc:
-            self._speaker_error = str(exc)
+            with self._lock:
+                self._speaker_error = str(exc)
         finally:
-            if device:
-                device.close()
-            from .hat import disable_speaker
-            disable_speaker()
+            try:
+                if device:
+                    device.close()
+            except Exception as exc:
+                with self._lock:
+                    self._speaker_error = str(exc)
+            try:
+                if amplifier:
+                    from .hat import disable_speaker
+                    disable_speaker()
+            except Exception as exc:
+                with self._lock:
+                    self._speaker_error = str(exc)
             with self._lock:
                 self._output_pcm = None
 
+    def _audio_loop(self):
+        while True:
+            with self._lock:
+                if not self._audio_queue or self._audio_closed:
+                    self._audio_active = None
+                    self._audio_thread = None
+                    return
+                self._audio_active = self._audio_queue.popleft()
+                _, _, generate = self._audio_active
+                # Each playback owns its cancellation token. A new announcement
+                # queued after STOP cannot accidentally revive an older job.
+                cancel = self._audio_stop = threading.Event()
+            self._play(generate, cancel)
+            with self._lock:
+                self._audio_active = None
+
+    def _ensure_audio_worker(self):
+        if not self._audio_thread or not self._audio_thread.is_alive():
+            self._audio_thread = threading.Thread(target=self._audio_loop, daemon=True, name='speaker')
+            self._audio_thread.start()
+
     def _start_audio(self, generate):
         self._speaker_ready()
-        self._audio_thread = threading.Thread(target=self._play, args=(generate,), daemon=True, name='speaker')
-        self._audio_thread.start()
+        self._audio_queue.append((None, None, generate))
+        self._ensure_audio_worker()
+
+    def announce(self, text):
+        """Queue one arming announcement without blocking robot operations.
+
+        Only the newest pending state for each source is kept. Thus a burst of
+        toggles cannot leave a long queue announcing obsolete arm states. User
+        speech/effects retain their existing single-playback/busy behavior.
+        """
+        if text not in ('controller armed', 'controller disarmed', 'system armed', 'system disarmed'):
+            raise ValueError('Unknown arming announcement')
+        with self._lock:
+            if self.simulate or self._audio_closed:
+                return {'queued': False, 'text': text}
+            key = text.split(' ', 1)[0]
+            self._audio_queue = deque(job for job in self._audio_queue if job[0] != key)
+            # If that state is already being announced, discard any pending
+            # superseded state without repeating the same spoken phrase.
+            if self._audio_active and self._audio_active[:2] == (key, text) and not self._audio_stop.is_set():
+                return {'queued': False, 'text': text}
+            self._speaker_error = None
+            self._audio_queue.append((key, text, lambda: audio.speech_wave(text)))
+            self._ensure_audio_worker()
+            return {'queued': True, 'text': text}
 
     def speak(self, text):
         if not isinstance(text, str) or not 1 <= len(text.strip()) <= 500:
@@ -508,8 +578,12 @@ class Media:
 
     def stop(self):
         self._record_stop.set()
-        self.microphone(False)
-        self._audio_stop.set()
         with self._lock:
+            self._audio_stop.set()
+            self._audio_queue.clear()
             if self._output_pcm:
-                self._output_pcm.stop()
+                try:
+                    self._output_pcm.stop()
+                except Exception as exc:
+                    self._speaker_error = str(exc)
+        self.microphone(False)

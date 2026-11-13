@@ -27,7 +27,7 @@ class PCM:
         for name in ('snd_pcm_readi', 'snd_pcm_writei'):
             getattr(self.lib, name).argtypes = [C.c_void_p, C.c_void_p, C.c_ulong]
             getattr(self.lib, name).restype = C.c_long
-        for name in ('snd_pcm_close', 'snd_pcm_drop', 'snd_pcm_prepare'):
+        for name in ('snd_pcm_close', 'snd_pcm_drop', 'snd_pcm_prepare', 'snd_pcm_drain'):
             getattr(self.lib, name).argtypes = [C.c_void_p]
         self.handle = C.c_void_p()
         self.cancel = threading.Event()
@@ -93,6 +93,24 @@ class PCM:
         with self._lock:
             if self.handle:
                 self.lib.snd_pcm_drop(self.handle)
+
+    def drain(self):
+        """Finish buffered playback while still allowing STOP to drop it.
+
+        The handle is nonblocking, so ALSA returns EAGAIN while samples remain.
+        Retry without holding the device lock between calls; stop() can then
+        cancel promptly even when a downstream mixer has a larger buffer.
+        """
+        while not self.cancel.is_set():
+            with self._lock:
+                if self.cancel.is_set() or not self.handle:
+                    return
+                result = self.lib.snd_pcm_drain(self.handle)
+            if result in (-11, -4):  # EAGAIN / interrupted system call
+                self.cancel.wait(.01)
+                continue
+            self._check(result)
+            return
 
     def close(self):
         self.cancel.set()

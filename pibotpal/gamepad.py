@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Passive USB joystick discovery and a read-only Linux joystick event monitor.
+"""USB joystick discovery, controller arming, and Linux input monitoring.
 
 A USB receiver being present does not establish that its wireless handset is
 paired. This module never grabs a device, changes its mode, or commands motion.
@@ -7,6 +7,7 @@ paired. This module never grabs a device, changes its mode, or commands motion.
 from __future__ import annotations
 
 import copy
+from collections import deque
 import errno
 import fcntl
 import hashlib
@@ -83,13 +84,14 @@ def capabilities(fd):
 
 class GamepadMonitor:
     def __init__(self, simulate=False, *, discover=None, opener=None, read=None,
-                 close_fd=None, capability_reader=None, poll=None, settings_path=None):
+                 close_fd=None, capability_reader=None, poll=None, settings_path=None, monotonic=None):
         self.simulate = simulate
         self._discover = discover or discover_gamepads
         self._open = opener or (lambda path: os.open(path, os.O_RDONLY|os.O_NONBLOCK|os.O_CLOEXEC))
         self._read, self._close_fd = read or os.read, close_fd or os.close
         self._capabilities = capability_reader or capabilities
         self._poll = poll or (lambda fd,timeout: bool(select.select([fd],[],[],timeout)[0]))
+        self._monotonic = monotonic or time.monotonic
         self._lock = threading.RLock()
         # Descriptor changes and reads are serialized separately from status.
         # select() runs without this lock; its generation is checked before read.
@@ -111,12 +113,17 @@ class GamepadMonitor:
         self._thread = None
         self._fd = None
         self._buffer = bytearray()
+        self._start_down = False
+        self._start_ready = False
+        self._last_start_toggle = None
+        self._arming_error = None
+        self._notifications = deque(maxlen=64)
         self._state = {'devices':[], 'active_device_id':None, 'connected':False,
                        'enabled':enabled, 'attached':False,
                        'axes':[], 'buttons':[], 'axis_names':[], 'button_names':[],
                        'last_event_at':None, 'events_seen':0, 'error':None,
                        'motion_enabled':False,
-                       'note':'Read-only input monitor. Receiver presence does not verify wireless pairing. Move a stick or press a button to confirm live events; no robot movement is mapped.'}
+                       'note':'Start toggles controller arming. Disarming keeps Start listening and ignores other inputs. Receiver presence does not verify wireless pairing; no robot movement is mapped.'}
 
     def start(self):
         with self._lock:
@@ -128,7 +135,18 @@ class GamepadMonitor:
 
     def status(self):
         with self._lock:
-            return copy.deepcopy(self._state)
+            state = copy.deepcopy(self._state)
+            state['error'] = self._arming_error or state['error']
+            state['armed'] = bool(state['enabled'] and state['connected'])
+            state['start_listening'] = bool(state['connected'] and 'Start' in state['button_names'])
+            return state
+
+    def drain_notifications(self):
+        """Return explicit arming transitions for the application's announcer."""
+        with self._lock:
+            events = list(self._notifications)
+            self._notifications.clear()
+            return events
 
     def _save_enabled(self, enabled):
         if self._settings_path is None:
@@ -147,20 +165,33 @@ class GamepadMonitor:
                 os.unlink(filename)
 
     def set_enabled(self, enabled):
-        """Enable USB input or close it immediately; never arms or moves the robot."""
+        """Arm normal controller input; Start remains listened to when disarmed.
+
+        The historical enabled preference is retained on disk and over MCP.
+        This state is independent of the robot's system motion arming.
+        """
         if type(enabled) is not bool:
             raise ValueError('enabled must be a boolean')
         with self._io_lock:
             if self._stop.is_set():
                 raise RuntimeError('Controller input monitor is closed')
+            before = self.status()['armed']
             self._save_enabled(enabled)
             with self._lock:
+                self._arming_error = None
+                changed = self._state['enabled'] != enabled
                 self._state['enabled'] = enabled
-            if not enabled:
-                self._disconnect()
-            elif not self.simulate:
+                if changed:
+                    self._state.update(axes=[0.0] * len(self._state['axes']),
+                                       buttons=[False] * len(self._state['buttons']),
+                                       last_event_at=None, events_seen=0)
+            if self._fd is None and not self.simulate:
                 self._refresh()
-            return self.status()
+            state = self.status()
+            if before != state['armed']:
+                with self._lock:
+                    self._notifications.append({'armed': state['armed']})
+            return state
 
     def _disconnect(self, error=None):
         with self._io_lock:
@@ -170,6 +201,8 @@ class GamepadMonitor:
                 except OSError: pass
                 self._fd = None
             self._buffer.clear()
+            self._start_down = self._start_ready = False
+            self._last_start_toggle = None
             with self._lock:
                 self._state.update(connected=False,active_device_id=None,axes=[],buttons=[],
                                    axis_names=[],button_names=[],last_event_at=None,events_seen=0,error=error)
@@ -180,8 +213,7 @@ class GamepadMonitor:
             with self._lock:
                 self._state.update(devices=devices, attached=bool(devices))
                 active = self._state['active_device_id']
-                enabled = self._state['enabled']
-            if not enabled or self._stop.is_set():
+            if self._stop.is_set():
                 self._disconnect()
                 return
             if self._fd is not None and not any(device['id']==active for device in devices):
@@ -199,6 +231,8 @@ class GamepadMonitor:
                     data = self._capabilities(fd)
                     self._fd = fd
                     self._generation += 1
+                    self._start_down = self._start_ready = False
+                    self._last_start_toggle = None
                     with self._lock:
                         self._state.update(connected=True,active_device_id=device['id'],error=None,
                                            axes=data['axes'],buttons=data['buttons'],
@@ -217,7 +251,7 @@ class GamepadMonitor:
 
     def _events(self, data):
         with self._io_lock, self._lock:
-            if not self._state['enabled'] or self._stop.is_set():
+            if self._stop.is_set():
                 return
             self._buffer.extend(data)
             while len(self._buffer)>=EVENT.size:
@@ -225,12 +259,38 @@ class GamepadMonitor:
                 del self._buffer[:EVENT.size]
                 initial = bool(kind & 0x80)
                 kind &= ~0x80
+                is_start = (kind == 1 and number < len(self._state['button_names'])
+                            and self._state['button_names'][number] == 'Start')
+                if is_start:
+                    pressed, was_down = bool(value), self._start_down
+                    self._start_down = pressed
+                    if initial:
+                        # A handset already holding Start when attached must
+                        # release it before any press is considered deliberate.
+                        self._start_ready = not pressed
+                    elif not pressed:
+                        self._start_ready = True
+                    elif not was_down and self._start_ready:
+                        now = self._monotonic()
+                        if self._last_start_toggle is None or now - self._last_start_toggle >= .25:
+                            self._last_start_toggle = now
+                            try:
+                                self.set_enabled(not self._state['enabled'])
+                            except (OSError, RuntimeError) as exc:
+                                # A failed save must neither change the latch
+                                # nor kill the live input-monitor thread.
+                                self._arming_error = f'Controller arming could not be changed: {exc}'
+                    if not initial:
+                        self._state['events_seen'] += 1
+                        self._state['last_event_at'] = time.time()
+                if not self._state['enabled']:
+                    continue
                 changed = False
                 if kind == 1 and number < len(self._state['buttons']):
                     self._state['buttons'][number]=bool(value);changed=True
                 elif kind == 2 and number < len(self._state['axes']):
                     self._state['axes'][number]=max(-1.0,min(1.0,value/32767));changed=True
-                if changed and not initial:
+                if changed and not initial and not is_start:
                     self._state['events_seen']+=1
                     self._state['last_event_at']=time.time()
 

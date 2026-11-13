@@ -235,16 +235,44 @@ monitors axes/buttons live while that section is visible. The attached receiver 
 consistent with a PS2-style controller receiver; the USB identity does not prove
 the retail brand or that a wireless handset is paired. Move a stick or press a
 button to confirm activity. `controller_get` and `get_status.gamepad` expose the
-same read-only state. Unplug/reconnect and permission errors are handled without
-mapping inputs to robot motion. No controller command arms or moves the crawler.
+same input state. Unplug/reconnect and permission errors are handled without
+mapping sticks to robot motion. Controller arming is separate from system motion arming.
 The monitor uses the Linux joystick interface directly, without a new library.
 
-The gamepad icon beside **Arm motion** toggles this USB input connection. It is
-filled when connected, outlined when switched off, and unavailable when no
-controller is attached. Input connects automatically by default. Turning it off
-closes the device and clears held inputs; the choice persists in private
-`controller.json` across page reloads, service restarts, and unplug/replug.
-`controller_set_enabled(enabled)` provides the same switch over MCP;
-`controller_get` and `get_status.gamepad` report `enabled`, `attached`, and
-`connected` separately. This setting is shared by all clients and is independent
-of motion arming.
+The gamepad icon beside **Arm motion** and a fresh **Start** button press both
+toggle controller arming. The icon is filled when armed and connected, outlined
+when disarmed, and unavailable when no receiver is attached. Controller input is
+armed by default; the choice persists in private `controller.json` across page
+reloads, service restarts, and unplug/replug. Disarming clears ordinary input
+values but keeps listening to Start so the handset can re-arm itself. Startup
+button states, held/repeated presses and rapid switch bounce never toggle arming.
+`controller_set_enabled(enabled)` provides the same shared setting over MCP;
+`controller_get` and `get_status.gamepad` report `enabled` (saved preference),
+`armed` (enabled and connected), `attached`, `connected`, and `start_listening`.
+Sticks and driving buttons are not yet mapped to movement.
+
+Explicit controller state changes say **controller armed** or **controller
+disarmed** through the robot speaker. The system **Arm motion** button and MCP
+`arm` tool say **system armed** or **system disarmed** after successful changes.
+Startup, reconnection and unchanged settings remain silent. Speech runs on a
+separate worker, with only the latest pending state per source retained. STOP
+cancels queued/current audio. Audio errors appear in speaker status without
+changing arming results or microphone consent. Arming never moves a servo.
+
+
+## Camera pan servo expansion
+
+The twelve leg servos occupy every Robot HAT servo output, P0–P11. SunFounder
+[V4 hardware](https://docs.sunfounder.com/projects/robot-hat-v4/en/stable/hardware_introduction.html)
+and [V5 hardware](https://docs.sunfounder.com/projects/robot-hat-v4/en/latest/robot_hat_v5/hardware_introduction.html)
+both expose twelve servo headers; higher PWM channels feed DC motor drivers.
+An additional servo controller is the straightforward path for IMX477 camera pan.
+
+A PCA9685 I²C breakout at its default address `0x40` can share the bus with the
+current HAT at `0x14`. Use Pi 3.3 V for logic VCC, a common ground, and a regulated
+servo V+ supply rated for the servo’s voltage and current requirements. See
+[Adafruit’s wiring/power guide](https://learn.adafruit.com/16-channel-pwm-servo-driver/pinouts).
+Its [PCA9685 driver is MIT licensed](https://github.com/adafruit/Adafruit_CircuitPython_PCA9685).
+The extra servo is not configured or driven yet; its range and center need
+calibration once the board and servo specifications are available. Keep camera
+pan separate from the twelve leg-joint channels and report commanded position.
