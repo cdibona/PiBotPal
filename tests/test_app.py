@@ -183,6 +183,27 @@ def test_camera_catalog_and_controller_monitor_are_read_only_in_simulation(clien
     assert call(client,'get_status')['structuredContent']['servo_angles']==[None]*12
 
 
+def test_usb_input_toggle_is_persisted_shared_and_never_arms(client,tmp_path):
+    original=call(client,'controller_get')['structuredContent']
+    assert original['enabled'] and not original['attached']
+    for enabled in (False,True):
+        result=call(client,'controller_set_enabled',enabled=enabled)['structuredContent']
+        assert result['enabled'] is enabled and not result['motion_enabled']
+        status=call(client,'get_status')['structuredContent']
+        assert status['gamepad']['enabled'] is enabled
+        assert not status['armed'] and status['servo_angles']==[None]*12
+        assert not status['microphone']['enabled']
+        settings=tmp_path/'controller.json'
+        assert json.loads(settings.read_text())=={'version':1,'enabled':enabled}
+        assert settings.stat().st_mode & 0o777==0o600
+        inventory=call(client,'hardware_get')['structuredContent']
+        gamepad=next(item for item in inventory['devices'] if item['id']=='gamepad')
+        assert gamepad['enabled'] is enabled and gamepad['options']['enabled'] is enabled
+    rejected=call(client,'hardware_save',device_id='gamepad',options={'enabled':False})
+    assert rejected['isError'] and 'controller_set_enabled' in str(rejected)
+    assert call(client,'controller_get')['structuredContent']['enabled']
+
+
 def test_distinct_camera_snapshots_and_persisted_primary_selection(client,tmp_path):
     import threading
     media=client.app.state.media

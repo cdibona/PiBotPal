@@ -95,9 +95,12 @@ class HardwareOptions:
   with self.lock:
    for key,(name,kind,_,notes) in DEFAULTS.items():
     options=copy.deepcopy(self.options[key]);active=key not in ('rear_camera','lidar','coral','imu')
+    if key=='gamepad' and 'enabled' in gamepad:
+     options['enabled']=gamepad['enabled']
+     notes+=' Use controller_set_enabled to change USB input; the setting is shared across clients.'
     devices.append({'id':key,'name':name,'kind':kind,'configured':bool(options.get('enabled')),
        'enabled':options['enabled'],'detected':detected[key],'options':options,
-       'status':('read-only input monitor; motion disabled' if key=='gamepad' else 'active driver' if active else 'configuration only; driver pending'),'notes':notes})
+       'status':(('read-only input monitor; motion disabled' if options['enabled'] else 'USB input disabled; motion disabled') if key=='gamepad' else 'active driver' if active else 'configuration only; driver pending'),'notes':notes})
   mem={}
   try:
    mem={line.split(':')[0]:int(line.split()[1])//1024 for line in Path('/proc/meminfo').read_text().splitlines() if line.startswith(('MemTotal:','MemAvailable:'))}

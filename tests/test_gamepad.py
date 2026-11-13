@@ -1,8 +1,10 @@
 """Joystick identity and event processing checks; no robot or device writes."""
 import errno
+import json
 from pathlib import Path
 import struct
 import time
+import threading
 
 import pytest
 from pibotpal.gamepad import EVENT, GamepadMonitor, discover_gamepads
@@ -130,3 +132,97 @@ def test_runtime_device_removal_is_reported_and_does_not_hold_input():
     assert state['axes']==[] and state['buttons']==[]
     assert state['error']=='Controller disconnected'
     monitor.close()
+
+
+def test_disable_closes_input_and_discards_held_and_partial_events(tmp_path):
+    closed=[]; opened=[]
+    def opener(path): opened.append(path); return 7
+    monitor=GamepadMonitor(discover=lambda:[device()],opener=opener,
+                          close_fd=closed.append,capability_reader=fake_caps,
+                          settings_path=tmp_path/'controller.json')
+    monitor._refresh()
+    assert monitor.status()['enabled'] and monitor.status()['attached'] and monitor.status()['connected']
+    monitor._events(EVENT.pack(1,1,1,0)+EVENT.pack(2,32767,2,0)+EVENT.pack(3,1,1,1)[:4])
+    disabled=monitor.set_enabled(False)
+    assert disabled['attached'] and not disabled['enabled'] and not disabled['connected']
+    assert disabled['axes']==[] and disabled['buttons']==[] and disabled['events_seen']==0
+    assert disabled['last_event_at'] is None and closed==[7] and not monitor._buffer
+    monitor._events(EVENT.pack(4,1,1,0));monitor._refresh()
+    assert len(opened)==1 and monitor.status()['events_seen']==0
+    enabled=monitor.set_enabled(True)
+    assert enabled['enabled'] and enabled['connected'] and len(opened)==2
+    assert enabled['axes']==[0.,0.] and enabled['buttons']==[False,False]
+    monitor.close()
+
+
+def test_disabled_preference_survives_restart_and_hotplug(tmp_path):
+    path=tmp_path/'controller.json';devices=[device()];opened=[]
+    def opener(p): opened.append(p); return 7
+    original=GamepadMonitor(discover=lambda:list(devices),opener=opener,close_fd=lambda fd:None,
+                            capability_reader=fake_caps,settings_path=path)
+    original.set_enabled(False);original.close()
+    assert json.loads(path.read_text())=={'version':1,'enabled':False}
+    assert path.stat().st_mode & 0o777==0o600
+    restored=GamepadMonitor(discover=lambda:list(devices),opener=opener,close_fd=lambda fd:None,
+                           capability_reader=fake_caps,settings_path=path)
+    restored._refresh();assert restored.status()['attached'] and not opened
+    devices.clear();restored._refresh();assert not restored.status()['attached']
+    devices.append(device());restored._refresh()
+    assert restored.status()['attached'] and not restored.status()['enabled'] and not opened
+    restored.set_enabled(True);assert restored.status()['connected'] and len(opened)==1
+    restored.close()
+
+
+def test_enable_without_receiver_keeps_auto_connection_preference():
+    devices=[]
+    monitor=GamepadMonitor(discover=lambda:list(devices),opener=lambda p:7,
+                          close_fd=lambda fd:None,capability_reader=fake_caps)
+    state=monitor.set_enabled(True)
+    assert state['enabled'] and not state['attached'] and not state['connected']
+    devices.append(device());monitor._refresh()
+    assert monitor.status()['connected']
+    monitor.close()
+
+
+def test_inflight_poll_cannot_read_after_disable_or_reused_descriptor():
+    polling=threading.Event(); release=threading.Event();stale_returned=threading.Event()
+    reads=[];closed=[]; polls=0
+    def poll(fd,timeout):
+        nonlocal polls
+        polls+=1
+        if polls==1:
+            polling.set();release.wait(2);stale_returned.set();return True
+        time.sleep(.005)
+        return False
+    def read(fd,count):
+        reads.append(fd);return EVENT.pack(1,1,1,0)
+    monitor=GamepadMonitor(discover=lambda:[device()],opener=lambda p:7,read=read,
+                          close_fd=closed.append,capability_reader=fake_caps,poll=poll)
+    monitor.start()
+    try:
+        assert polling.wait(1)
+        # The second open deliberately reuses fd 7; generation, not integer
+        # descriptor equality, must reject the old poll's readiness result.
+        monitor.set_enabled(False)
+        assert closed==[7] and not monitor.status()['connected']
+        monitor.set_enabled(True)
+        release.set();assert stale_returned.wait(1)
+        deadline=time.monotonic()+1
+        while polls<2 and time.monotonic()<deadline:time.sleep(.005)
+        assert polls>=2 and reads==[] and monitor.status()['events_seen']==0
+    finally:
+        release.set();monitor.close()
+
+
+def test_bad_preference_and_failed_save_do_not_silently_enable_input(tmp_path,monkeypatch):
+    path=tmp_path/'controller.json';path.write_text('{"version":1,"enabled":"yes"}')
+    with pytest.raises(RuntimeError,match='repair controller.json'):
+        GamepadMonitor(settings_path=path)
+    path.unlink()
+    monitor=GamepadMonitor(simulate=True,settings_path=path)
+    for value in (None,1,'false'):
+        with pytest.raises(ValueError,match='boolean'):monitor.set_enabled(value)
+    def failed(enabled):raise OSError('disk full')
+    monkeypatch.setattr(monitor,'_save_enabled',failed)
+    with pytest.raises(OSError,match='disk full'):monitor.set_enabled(False)
+    assert monitor.status()['enabled'] and not path.exists()

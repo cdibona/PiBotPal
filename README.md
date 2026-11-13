@@ -238,3 +238,13 @@ button to confirm activity. `controller_get` and `get_status.gamepad` expose the
 same read-only state. Unplug/reconnect and permission errors are handled without
 mapping inputs to robot motion. No controller command arms or moves the crawler.
 The monitor uses the Linux joystick interface directly, without a new library.
+
+The gamepad icon beside **Arm motion** toggles this USB input connection. It is
+filled when connected, outlined when switched off, and unavailable when no
+controller is attached. Input connects automatically by default. Turning it off
+closes the device and clears held inputs; the choice persists in private
+`controller.json` across page reloads, service restarts, and unplug/replug.
+`controller_set_enabled(enabled)` provides the same switch over MCP;
+`controller_get` and `get_status.gamepad` report `enabled`, `attached`, and
+`connected` separately. This setting is shared by all clients and is independent
+of motion arming.

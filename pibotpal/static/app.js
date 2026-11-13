@@ -3,7 +3,7 @@ let status={},connected=false,rpcId=0,initialized=false,polling=false,model=null
 const names=['Right front','Left front','Left rear','Right rear'];
 const jointNames=['Knee','Shoulder','Hip'];
 const limits=[[-90,90],[-10,90],[-60,60]];
-let pending=0, lastServerInstance=null;
+let pending=0, lastServerInstance=null, controllerToggle=null;
 
 // A live stream owns its connection and retries EOF/errors independently of telemetry.
 // This also catches short restarts that happen between successful status polls.
@@ -107,7 +107,7 @@ function notice(message,type=''){const n=$('notice');n.textContent=message;n.cla
 function log(message){const output=$('test-output');if(output.textContent==='Select an experiment to begin.')output.textContent='';output.textContent=`[${new Date().toLocaleTimeString()}] ${typeof message==='string'?message:JSON.stringify(message,null,2)}\n\n${output.textContent}`.slice(0,30000);}
 async function command(name,args={},message){pending++;updateControls();try{const result=await call(name,args);if(message)notice(message);await refresh();return result;}catch(error){notice(error.message,'error');throw error;}finally{pending--;updateControls();}}
 function motionAllowed(){return connected&&status.armed&&!status.busy&&!status.estop&&!status.plan?.running&&!pending;}
-function updateControls(){document.querySelectorAll('[data-move],.motion-control,.joint-slider').forEach(button=>button.disabled=!motionAllowed());$('arm').disabled=!connected||pending>0;$('arm').textContent=status.armed?'Disarm motion':'Arm motion';$('arm').classList.toggle('armed',Boolean(status.armed));$('arm').title=status.estop?'Reset stop and arm motion':status.armed?'Disarm motion':'Arm motion';$('motion-tag').textContent=status.estop?'STOPPED':status.busy?'MOVING':status.armed?'ARMED':'DISARMED';$('motion-tag').className=`tag ${status.estop?'red':status.armed?'teal':''}`;}
+function updateControls(){document.querySelectorAll('[data-move],.motion-control,.joint-slider').forEach(button=>button.disabled=!motionAllowed());$('arm').disabled=!connected||pending>0;$('arm').textContent=status.armed?'Disarm motion':'Arm motion';$('arm').classList.toggle('armed',Boolean(status.armed));$('arm').title=status.estop?'Reset stop and arm motion':status.armed?'Disarm motion':'Arm motion';$('motion-tag').textContent=status.estop?'STOPPED':status.busy?'MOVING':status.armed?'ARMED':'DISARMED';$('motion-tag').className=`tag ${status.estop?'red':status.armed?'teal':''}`;controllerToggle?.update(status.gamepad,connected);}
 function render(state){
   if(state.server_instance_id&&lastServerInstance&&state.server_instance_id!==lastServerInstance)initialized=false;
   if(state.server_instance_id)lastServerInstance=state.server_instance_id;
@@ -207,5 +207,6 @@ try{const {initAdmin}=await import('./admin.js');admin=initAdmin({call,notice,on
 try{const {initPlans}=await import('./plans.js');plans=initPlans({call,notice,getStatus:()=>connected?status:{}});}catch(error){$('plan').textContent=`Plans unavailable: ${error.message}`;}
 try{const {initHardware}=await import('./hardware-admin.js');hardwareAdmin=initHardware({call});}catch(error){console.error('Hardware inventory unavailable',error);}
 try{const {initCameraViews}=await import('./cameras-ui.js');cameraViews=initCameraViews({call,notice,CameraFeed,getStatus:()=>connected?status:{}});}catch(error){console.error('Camera settings unavailable',error);}
+try{const {initControllerToggle}=await import('./controller-toggle.js');controllerToggle=initControllerToggle({call,notice,onChanged:gamepad=>{status.gamepad=gamepad;hardwareAdmin?.refreshControllers();}});}catch(error){console.error('Controller toggle unavailable',error);}
 selectTab(location.hash.slice(1),false);
 setInterval(refresh,500);refresh();loadExamples();setInterval(()=>{$('clock').textContent=new Date().toLocaleTimeString('en-GB');},1000);

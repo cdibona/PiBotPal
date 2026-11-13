@@ -111,6 +111,7 @@ export function initHardware({call}) {
   $('hardware-refresh').addEventListener('click', refresh);
   return {
     refresh,
+    refreshControllers: controllers.refresh,
     setActive(name) { controllers.setActive(name === 'controllers'); if (name === 'hardware') refresh(); },
   };
 }

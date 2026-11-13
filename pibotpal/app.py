@@ -41,7 +41,7 @@ def create_app(controller=None, media=None):
     server_instance_id = uuid4().hex
     plans = PlanStore(media.root, controller)
     hardware_options = HardwareOptions(media.root)
-    gamepad = GamepadMonitor(simulate=controller.simulate)
+    gamepad = GamepadMonitor(simulate=controller.simulate, settings_path=media.root / 'controller.json')
     motion_gate = asyncio.Lock()
     settings = Settings(media.root)
     llm_example = {'id': None}
@@ -219,6 +219,11 @@ def create_app(controller=None, media=None):
         return gamepad.status()
 
     @mcp.tool()
+    async def controller_set_enabled(enabled: bool) -> dict:
+        """Persist USB gamepad input on/off. Off closes input and clears held controls; never arms or moves the robot."""
+        return await invoke(gamepad.set_enabled, enabled)
+
+    @mcp.tool()
     async def microphone(enabled: bool) -> dict:
         """Explicit microphone consent; disabling immediately terminates capture. Stream: /audio.wav."""
         lease['last_seen'] = time.monotonic()
@@ -331,6 +336,8 @@ def create_app(controller=None, media=None):
     @mcp.tool()
     async def hardware_save(device_id: str, options: dict) -> dict:
         """Save hardware inventory/provisioning options only. Does not activate pending drivers or microphone capture."""
+        if device_id == 'gamepad':
+            raise ValueError('Use controller_set_enabled to change USB gamepad input')
         await invoke(hardware_options.save, device_id, options)
         return await hardware_get()
 

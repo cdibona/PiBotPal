@@ -25,12 +25,13 @@ export function initControllers({call}) {
     return element;
   };
   function render(data) {
-    $('controller-status').textContent = data.connected ? 'RECEIVER CONNECTED' : 'NOT CONNECTED';
+    const disabled = data.enabled === false;
+    $('controller-status').textContent = disabled ? 'INPUT DISABLED' : data.connected ? 'RECEIVER CONNECTED' : 'NOT CONNECTED';
     $('controller-status').className = 'tag ' + (data.connected ? 'teal' : '');
-    $('controller-note').textContent = data.connected ? 'USB input is available. Watch the controls below to verify that your sticks and buttons respond.' : 'Connect a USB gamepad or its wireless receiver to the Pi.';
+    $('controller-note').textContent = disabled ? 'Controller input is switched off. Use the gamepad icon beside Arm motion to reconnect.' : data.connected ? 'USB input is available. Watch the controls below to verify that your sticks and buttons respond.' : 'Connect a USB gamepad or its wireless receiver to the Pi.';
     $('controller-driver-note').textContent = data.note || 'A detected USB receiver does not confirm that its wireless handset is paired.';
     const events = Number(data.events_seen) || 0;
-    $('controller-activity').textContent = !data.connected ? 'No controller connected' : events ? `${events} input event${events === 1 ? '' : 's'} received` : 'Move a stick or press a button';
+    $('controller-activity').textContent = disabled ? 'Input paused' : !data.connected ? 'No controller connected' : events ? `${events} input event${events === 1 ? '' : 's'} received` : 'Move a stick or press a button';
     const devices = data.devices || [];
     const nextDevices = JSON.stringify(devices);
     if (nextDevices !== deviceSignature) {
