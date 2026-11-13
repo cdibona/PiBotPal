@@ -79,7 +79,7 @@ Protocol/hosting references: [official MCP Python SDK](https://github.com/modelc
 
 ## Admin: model providers and MCP connections
 
-Open the [Admin tab](https://spiderbot.tail689a35.ts.net/#admin). Add an **Ollama** server with its origin (`http://your-server:11434`), or an **OpenAI-compatible** Chat Completions API base (`https://your-provider/v1`). Save, choose **Discover models**, select an exact installed model tag, then save the model. Discovery never pulls or downloads a model. Qwen is supported through Ollama; both Ollama native and its OpenAI-compatible endpoint have been tested against the provided server.
+Open the [Admin tab](https://spiderbot.tail689a35.ts.net/#admin/hardware). Settings are grouped into **Hardware**, **Cameras**, **Models**, **MCP connections**, **Playground**, and **System** subtabs. Each section has a direct `#admin/<section>` link and supports keyboard tab/arrow navigation. Admin hides dashboard telemetry to keep settings near the top; device options are collapsed under current hardware and expansion groups. The header arm/STOP controls stay available. Add an **Ollama** server with its origin (`http://your-server:11434`), or an **OpenAI-compatible** Chat Completions API base (`https://your-provider/v1`). Save, choose **Discover models**, select an exact installed model tag, then save the model. Discovery never pulls or downloads a model. Qwen is supported through Ollama; both Ollama native and its OpenAI-compatible endpoint have been tested against the provided server.
 
 Choose separate testing and assistant defaults. The playground sends only the text you enter; camera/audio data is not included. Model jobs are bounded by the configured whole-job timeout, five model rounds, and eight tool calls, and can be cancelled. The language-model example becomes available after selecting the default testing provider.
 
@@ -133,8 +133,8 @@ rejected by the simple parser rather than silently dropped.
 
 ## Hardware inventory and expansion
 
-Admin now lists the HAT/servos, front camera, sonar, power telemetry, microphone,
-speaker, rear USB webcam, RPLIDAR C1, Coral USB, and an optional IMU. It shows
+Admin’s Hardware section lists the HAT/servos, cameras, sonar, power telemetry, microphone,
+speaker, rear USB webcam, RPLIDAR C1, Coral USB, USB gamepad, and an optional IMU. It shows
 passively discovered stable USB camera/serial paths, Coral IDs, and Pi memory.
 Settings are validated and atomically stored in `hardware.json`. These are
 inventory/provisioning preferences: saving does not activate a driver, change
@@ -194,3 +194,35 @@ these sizes are only a lower bound: metadata, quantization scales, KV cache,
 and runtime buffers add memory. Models are not downloaded or installed by this
 change. Keep the existing remote Ollama Qwen server for stronger drafting while
 using the deterministic parser/executor offline for simple routines.
+
+## Multiple CSI cameras and USB controller recognition
+
+The dashboard shows the selected primary camera and additional CSI feeds at the
+same time. [Admin → Cameras](https://spiderbot.tail689a35.ts.net/#admin/cameras)
+provides independent start/stop, previews, snapshots, and primary selection.
+Stable camera IDs derive from the physical libcamera sensor ID, rather than
+array order. This robot currently detects an IMX477 and an OV5647. Both start at
+640×480/12 fps; the OV5647 remains the initial primary for compatibility. Explicit
+primary selection persists in `cameras.json` (0600). A shared request dispatcher
+routes the process-wide libcamera completion queue to each camera, allowing
+simultaneous capture without one stream consuming the other's requests.
+
+MCP adds `camera_list`, `camera_select(camera_id)`, and optional `camera_id` on
+`camera(enabled, camera_id)`. Each sensor has `/cameras/{id}/video.mjpg` and
+`/cameras/{id}/snapshot.jpg`. Existing `/video.mjpg`, `/snapshot.jpg`, vision tests,
+and recordings use the primary camera. Named streams remain pinned to their
+sensor; the legacy video stream follows an explicit primary change. Existing
+Android/Windows clients continue using the primary feed. Camera status includes
+brightness and read-only exposure/gain metadata to help diagnose a covered lens
+or low light. Capture start is independent of microphone consent and arming.
+
+[Admin → Hardware](https://spiderbot.tail689a35.ts.net/#admin/hardware) recognizes
+Linux USB joystick devices, shows their stable path and USB identity, and
+monitors axes/buttons live. The attached receiver identifies as `2563:0575`,
+`USB WirelessGamepad` (ShanWan), with six axes and thirteen buttons. This is
+consistent with a PS2-style controller receiver; the USB identity does not prove
+the retail brand or that a wireless handset is paired. Move a stick or press a
+button to confirm activity. `controller_get` and `get_status.gamepad` expose the
+same read-only state. Unplug/reconnect and permission errors are handled without
+mapping inputs to robot motion. No controller command arms or moves the crawler.
+The monitor uses the Linux joystick interface directly, without a new library.

@@ -1,0 +1,104 @@
+"""Mocked Admin subtab, camera selection, and controller-monitor regression.
+
+Run .venv/bin/python tests/browser/check_admin_cameras.py. No robot requests escape.
+"""
+import io
+import json
+from pathlib import Path
+from PIL import Image
+from playwright.sync_api import sync_playwright
+
+ROOT=Path(__file__).resolve().parents[2]
+buffer=io.BytesIO();Image.new('RGB',(4,4),(30,130,100)).save(buffer,'JPEG');jpeg=buffer.getvalue()
+packet=b'--frame\r\nContent-Type: image/jpeg\r\nContent-Length: '+str(len(jpeg)).encode()+b'\r\n\r\n'+jpeg+b'\r\n'
+
+with sync_playwright() as p:
+    browser=p.chromium.launch(executable_path='/usr/bin/chromium',headless=True,args=['--no-sandbox'])
+    for width in (1440,390):
+        page=browser.new_page(viewport={'width':width,'height':950});errors=[];calls=[]
+        page.on('pageerror',lambda e:errors.append(str(e)))
+        cameras=[{'id':key,'hardware_id':'/base/'+model,'model':model,'enabled':True,'available':True,'error':None,'timestamp':1,'video_url':f'/cameras/{key}/video.mjpg','snapshot_url':f'/cameras/{key}/snapshot.jpg'} for key,model in [('csi-a','ov5647'),('csi-b','imx477')]]
+        state={'primary':'csi-a','provider_saved':None}
+        provider={'id':'p1','name':'Local Qwen','kind':'ollama','base_url':'http://ollama:11434','model':'qwen','enabled':True,'api_key_set':True}
+        defaults={'test_provider_id':'p1','assistant_provider_id':'p1','system_prompt':'Help','max_tokens':1024,'temperature':.2,'timeout_seconds':120,'robot_tools':['get_status']}
+        def catalog():return {'cameras':cameras,'primary_camera_id':state['primary']}
+        def route(route):
+            path=route.request.url.split('robot.test',1)[-1].split('?',1)[0]
+            if path=='/mcp':
+                request=route.request.post_data_json
+                if request['method']=='initialize':value={'protocolVersion':'2025-03-26','capabilities':{},'serverInfo':{'name':'mock','version':'1'}}
+                else:
+                    name=request.get('params',{}).get('name');args=request.get('params',{}).get('arguments',{});calls.append((name,args))
+                    if name=='get_status':value={'server_instance_id':'mock','armed':False,'busy':False,'estop':False,'servo_angles':[None]*12,'ultrasonic':{'valid':False},'camera':next(c for c in cameras if c['id']==state['primary']),'microphone':{'enabled':False},'speaker':{},'recordings':[],'plan':{'running':False},'examples':{},**catalog()}
+                    elif name=='list_examples':value=[]
+                    elif name=='plan_list':value={'poses':[],'plans':[],'execution':{'running':False}}
+                    elif name=='admin_get':value={'providers':[provider],'connections':[],'defaults':defaults,'server':{}}
+                    elif name=='admin_save_provider':state['provider_saved']=args['provider'];value=provider
+                    elif name=='hardware_get':value={'host':{'model':'Pi5','memory_total_mb':4096},'discovered':{},'devices':[{'id':'servos','name':'Servos','options':{'enabled':True},'detected':None,'status':'active driver'}]}
+                    elif name=='controller_get':value={'devices':[{'id':'pad','name':'USB WirelessGamepad','vendor_id':'2563','product_id':'0575','path':'/dev/input/js0','readable':True}],'connected':True,'axes':[.5,-.25],'axis_names':['X','Y'],'buttons':[True,False],'button_names':['South','East'],'motion_enabled':False,'note':'Read-only. Receiver pairing unverified.'}
+                    elif name=='camera_list':value=catalog()
+                    elif name=='camera_select':state['primary']=args['camera_id'];value=catalog()
+                    elif name=='camera':
+                        camera=next(c for c in cameras if c['id']==args['camera_id']);camera['enabled']=args['enabled'];camera['available']=args['enabled'];value=camera
+                    else:raise AssertionError('Unexpected tool '+str(name))
+                    value={'content':[{'type':'text','text':json.dumps(value)}]}
+                route.fulfill(content_type='application/json',body=json.dumps({'jsonrpc':'2.0','id':request['id'],'result':value}))
+            elif path.endswith('/video.mjpg'):route.fulfill(content_type='multipart/x-mixed-replace; boundary=frame',body=packet)
+            elif path.endswith('/snapshot.jpg'):route.fulfill(content_type='image/jpeg',body=jpeg)
+            elif path.startswith('/static/'):
+                file=ROOT/'pibotpal'/path.lstrip('/');route.fulfill(path=str(file)) if file.is_file() else route.fulfill(status=404)
+            elif path=='/':route.fulfill(path=str(ROOT/'pibotpal/static/index.html'))
+            else:route.fulfill(status=404)
+        page.route('http://robot.test/**',route)
+        page.goto('http://robot.test/#admin',wait_until='domcontentloaded')
+        page.get_by_role('tab',name='Hardware',exact=True).wait_for()
+        assert page.get_by_role('tab',name='Hardware',exact=True).get_attribute('aria-selected')=='true'
+        page.wait_for_function("document.querySelector('#controller-status').textContent==='CONNECTED'")
+        assert page.locator('#controller-axes output').first.inner_text()=='0.50'
+        assert page.locator('#controller-buttons [aria-label="South: pressed"]').count()==1
+        assert page.locator('#provider-form').is_hidden()
+        assert page.locator('.power-panel').is_hidden() and page.locator('.metrics').is_hidden()
+        options=page.locator('details.hardware-device').first
+        assert not options.get_attribute('open')
+        options.locator('summary').click()
+        assert options.locator('form').is_visible()
+        options.locator('summary').click()
+        assert options.locator('form').is_hidden()
+        page.get_by_role('tab',name='Models',exact=True).click()
+        page.locator('#provider-list button').click()
+        assert page.locator('#provider-secret-status').inner_text()=='KEY SAVED'
+        page.locator('#provider-form button[type=submit]').click()
+        page.wait_for_function("document.querySelector('#admin-notice').textContent.includes('Provider saved')")
+        assert state['provider_saved']['api_key']==''
+        page.locator('#provider-test').click()
+        assert page.get_by_role('tab',name='Playground',exact=True).get_attribute('aria-selected')=='true'
+        assert page.locator('#llm-prompt').is_visible()
+        page.get_by_role('tab',name='MCP connections',exact=True).click()
+        assert page.locator('#mcp-connection-form').is_visible() and page.locator('#llm-test-form').is_hidden()
+        page.get_by_role('tab',name='System',exact=True).click()
+        assert page.locator('#local-mcp-url').is_visible()
+        page.get_by_role('tab',name='Cameras',exact=True).click()
+        page.wait_for_function("document.querySelectorAll('#camera-admin-list .csi-camera-card').length===2")
+        page.wait_for_function("[...document.querySelectorAll('#camera-admin-list img')].every(i=>Number(i.dataset.frameCount)>0)")
+        cards=page.locator('#camera-admin-list .csi-camera-card')
+        cards.nth(0).get_by_role('button',name='Stop capture').click()
+        cards.nth(0).get_by_role('button',name='Start capture').wait_for(state='visible')
+        cards.nth(1).get_by_role('button',name='Use as primary').click()
+        page.wait_for_function("document.querySelector('#primary-camera').value==='csi-b'")
+        page.locator('[data-tab=dashboard]').click()
+        assert page.locator('.power-panel').is_visible() and page.locator('.metrics').is_visible()
+        assert page.locator('#other-camera-feeds .csi-camera-card').count()==1
+        page.select_option('#primary-camera','csi-a')
+        page.wait_for_timeout(600)
+        assert state['primary']=='csi-a'
+        page.locator('[data-tab=admin]').click()
+        page.get_by_role('tab',name='Models',exact=True).click()
+        page.get_by_role('tab',name='Models',exact=True).press('ArrowRight')
+        assert page.get_by_role('tab',name='MCP connections',exact=True).get_attribute('aria-selected')=='true'
+        assert page.evaluate('document.documentElement.scrollWidth<=innerWidth')
+        assert not errors,errors
+        assert not ({'arm','move','set_leg','set_servo','microphone','plan_run'} & {name for name,args in calls})
+        page.screenshot(path=str(ROOT/f'artifacts/admin-subtabs-{width}.png'))
+        print('Admin/camera browser workflow passed:',width,'px; no actuation calls')
+        page.close()
+    browser.close()

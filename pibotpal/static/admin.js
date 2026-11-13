@@ -75,8 +75,43 @@ const markup = `
     </article>
   </div>`;
 
-export function initAdmin({call, notice, onConfigChanged}) {
+export function initAdmin({call, notice, onConfigChanged, onSectionChange}) {
   $('admin').innerHTML = markup;
+  const intro=$('admin').querySelector('.admin-intro');
+  intro.querySelector('.eyebrow').textContent='ROBOT SETTINGS';
+  intro.querySelector('h2').textContent='Everything in its place.';
+  intro.querySelector('p:last-child').textContent='Manage hardware, cameras, model providers, and connections from separate sections.';
+  const sections=[['hardware','Hardware'],['cameras','Cameras'],['models','Models'],['mcp','MCP connections'],['playground','Playground'],['system','System']];
+  const navigation=document.createElement('div');navigation.className='admin-subtabs';navigation.setAttribute('role','tablist');navigation.setAttribute('aria-label','Admin sections');
+  const panels=new Map();
+  for(const [id,title] of sections){
+    const button=document.createElement('button');button.type='button';button.id='admin-tab-'+id;button.textContent=title;button.dataset.adminSection=id;button.setAttribute('role','tab');button.setAttribute('aria-controls','admin-'+id);
+    const panel=document.createElement('section');panel.id='admin-'+id;panel.className='admin-subpanel';panel.setAttribute('role','tabpanel');panel.setAttribute('aria-labelledby',button.id);panel.hidden=true;
+    navigation.append(button);panels.set(id,panel);
+  }
+  intro.after(navigation);
+  const modelGrid=$('admin').querySelector('.admin-grid');panels.get('models').append(modelGrid);
+  panels.get('mcp').append($('admin').querySelector('.admin-mcp-panel'));
+  const bottom=$('admin').querySelector('.admin-bottom-grid');
+  panels.get('playground').append(bottom.querySelector('.admin-playground'));
+  panels.get('system').append(bottom.querySelector('.admin-server-panel'));bottom.remove();
+  for(const panel of panels.values())$('admin').append(panel);
+  let activeSection='hardware';
+  function selectSection(name='hardware',updateHash=true){
+    if(!panels.has(name))name='hardware';activeSection=name;
+    for(const button of navigation.querySelectorAll('[role="tab"]')){const selected=button.dataset.adminSection===name;button.setAttribute('aria-selected',String(selected));button.tabIndex=selected?0:-1;button.classList.toggle('active',selected);}
+    for(const [id,panel] of panels)panel.hidden=id!==name;
+    if(updateHash)history.replaceState(null,'','#admin/'+name);
+    onSectionChange?.(name);
+  }
+  navigation.addEventListener('click',event=>{const button=event.target.closest('[data-admin-section]');if(button)selectSection(button.dataset.adminSection);});
+  navigation.addEventListener('keydown',event=>{
+    if(!['ArrowLeft','ArrowRight','Home','End'].includes(event.key))return;
+    const tabs=[...navigation.querySelectorAll('[role="tab"]')];let index=tabs.indexOf(document.activeElement);if(index<0)return;
+    event.preventDefault();index=event.key==='Home'?0:event.key==='End'?tabs.length-1:(index+(event.key==='ArrowRight'?1:-1)+tabs.length)%tabs.length;
+    selectSection(tabs[index].dataset.adminSection);tabs[index].focus();
+  });
+  selectSection('hardware',false);
   let state = {providers: [], connections: [], defaults: {}};
   let connectionTools = [];
   let allowedTools = new Set();
@@ -290,6 +325,7 @@ export function initAdmin({call, notice, onConfigChanged}) {
     await changed(); editProvider(); message('Provider deleted. Defaults that used it have been cleared.');
   }));
   $('provider-test').addEventListener('click', () => {
+    selectSection('playground');
     $('llm-provider').value = $('provider-id').value;
     if (!$('llm-prompt').value) $('llm-prompt').value = 'Reply with a short greeting and the model name, if you know it.';
     $('llm-test-form').scrollIntoView({behavior: 'smooth', block: 'center'});
@@ -355,6 +391,8 @@ export function initAdmin({call, notice, onConfigChanged}) {
   $('admin-refresh').addEventListener('click', event => busy(event.currentTarget, async () => {await refresh(); message('Settings refreshed.');}));
   editProvider(); editConnection(); renderDefaults(); renderServer();
   return {
+    selectSection,
+    get section(){return activeSection;},
     async refresh() { try { await refresh({resetDefaults: !loaded}); } catch (error) { message(error.message, 'error'); } },
     async cancelActive() { if (jobId) { try { showJob(await rpc('llm_cancel', {job_id: jobId})); } catch {} } },
   };
