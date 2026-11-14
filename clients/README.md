@@ -2,7 +2,7 @@
 
 These first Android and Windows clients use the robot's existing **MCP server** for every control and status request. They display the camera through a native multipart JPEG decoder; they do not embed the web dashboard.
 
-Both provide a configurable robot URL, explicit arm/disarm, persistent STOP, one-cycle directional movement, stand/sit, measured battery voltage, forward ultrasonic range, and live video. They initialize MCP, poll `get_status` every second in the foreground, and honor busy/disarmed state. They never enable or capture microphone audio. Both include a **Plan** tab for saved servo poses and motion sequences. The website's 3D view, calibration/testing catalog, and hardware/LLM administration remain in the web interface.
+Both provide a configurable robot URL, explicit arm/disarm, persistent STOP, one-cycle directional movement, stand/sit, measured battery voltage, forward ultrasonic range, and live video. They initialize MCP, poll `get_status` every second in the foreground, and honor busy/disarmed state. They never enable or capture microphone audio. Both include a **Plan** tab for saved servo poses and motion sequences, and a **Shared actions** selector for the robot's editable action library. The website's 3D view, keyframe editor, calibration/testing catalog, and hardware/LLM administration remain in the web interface.
 
 ## Connect
 
@@ -19,11 +19,11 @@ Power display shows measured voltage. It does not invent charge percentage, char
 
 ## Plan tab
 
-The Plan tab uses the shared MCP plan library, so poses and plans saved from the website appear in both apps. Refresh the library after another interface edits it.
+The Plan tab uses the shared MCP plan and action library, so poses, plans and actions saved from the website appear in both apps. Refresh the library after another interface edits it. **New plan** clears the draft and creates a separate plan when saved. Select a saved plan to edit it instead.
 
 1. Give a pose a name and choose **Save current servo positions** after the robot has a complete commanded pose. These are commanded angles; the servos have no position feedback.
 2. Describe a sequence, for example: “Stand. Move forward 4 steps, turn left, move forward four steps.” Choose **Draft steps for review**. The default uses the server’s bounded command parser; optionally select **Use configured LLM to draft** to use the Admin assistant provider. Drafting never executes movement.
-3. Review or edit the steps as JSON, name the plan, and save. The editor accepts action, saved-pose, and wait steps. Select a saved pose to append it to the draft.
+3. Review or edit the steps as JSON, name the plan, and save. The editor accepts action, saved-pose, and wait steps. Select a shared action or saved pose to append it to the draft. Appended actions use the current speed slider and one repetition; edit the step to change these values.
 4. Select a saved plan, explicitly arm motion, then choose **Run selected plan**. Global **STOP** cancels the plan and disarms. Leaving the app/window retains the existing stop behavior.
 
 Example step array:
@@ -37,11 +37,15 @@ Example step array:
 ]
 ```
 
+The **Shared actions** selector on the Controller tab runs any action loaded from the robot, including custom actions. The quick movement buttons and saved plans use those same server definitions; neither app maintains its own servo keyframes. If an older robot service does not expose the action catalog, the selector remains empty and the existing quick controls remain available.
+
+Choose **Edit keyframes in web planner** to create or edit action frames, servo angles and transition speeds in the robot's website. Opening the browser leaves the native app's foreground and sends its usual stop request; reconnect after returning. The native Plan tabs create and edit sequences of these actions, saved poses and waits.
+
 The server validates and bounds every plan. Sensor conditions and autonomous decision steps are not executed by these initial clients.
 
 ## Download from the robot
 
-Open the **PiBotPal apps** section at the bottom of the [robot website](https://spiderbot.tail689a35.ts.net/#apps). Downloads are served directly by the robot over Tailscale; no GitHub login is needed.
+Open **Apps** in the top navigation of the [robot website](https://spiderbot.tail689a35.ts.net/#apps). Downloads are served directly by the robot over Tailscale; no GitHub login is needed.
 
 - [Android APK](https://spiderbot.tail689a35.ts.net/downloads/PiBotPal-Android.apk)
 - [Windows x64 ZIP](https://spiderbot.tail689a35.ts.net/downloads/PiBotPal-Windows-x64.zip)
@@ -96,6 +100,7 @@ The Windows client saves its endpoint under `%LOCALAPPDATA%\PiBotPal\client.json
 - `POST /mcp`: JSON-RPC 2.0, `Accept: application/json, text/event-stream`.
 - Initialize at protocol version `2025-03-26`, then use the server-negotiated protocol version and session header when supplied.
 - `tools/call`: `get_status`, `arm`, `stop`, `move`, and `camera`.
+- The Plan tabs call `plan_list`, `pose_save`, `pose_delete`, `plan_draft`, `plan_save`, `plan_delete`, and `plan_run`. `plan_list.actions` supplies the shared action names used by the selectors; `move` and action-type plan steps resolve those names on the robot.
 - `GET /video.mjpg`: multipart JPEG, each part with `Content-Length`; frames are limited to 1 MiB and header lengths are bounded.
 - Responses accept both current `structuredContent` and older JSON text content. The server uses stateless JSON responses; the clients also accept a finite SSE result.
 

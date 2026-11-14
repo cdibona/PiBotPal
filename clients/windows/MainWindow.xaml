@@ -36,13 +36,19 @@
                     <Button x:Name="BackwardButton" Content="↓ Backward" Tag="backward" Click="Move_Click"/>
                     <Button x:Name="SitButton" Content="Sit" Tag="sit" Click="Move_Click"/>
                 </UniformGrid>
+                <TextBlock Text="Shared actions" FontSize="20" Margin="4,16,4,4"/>
+                <TextBlock x:Name="ActionLibraryText" Text="Connect to load the robot’s action library." TextWrapping="Wrap" Margin="4,4" Foreground="#92AAB4"/>
+                <ComboBox x:Name="ActionList" Margin="4" MinHeight="32" SelectionChanged="SharedAction_Changed" AutomationProperties.Name="Shared robot action"/>
+                <WrapPanel><Button x:Name="RunActionButton" Content="Run selected action" Click="RunAction_Click"/><Button x:Name="RefreshActionsButton" Content="Refresh action library" Click="RefreshPlans_Click"/></WrapPanel>
                 <TextBlock Margin="0,16,0,0" Text="Microphone capture is never enabled by this app. Moving away from this window stops motion. STOP holds the last servo command; it does not remove power." Foreground="#92AAB4" TextWrapping="Wrap"/>
                 </StackPanel></TabItem>
                 <TabItem Header="Plan"><StackPanel Margin="12" TextElement.Foreground="#DFE8ED">
                     <TextBlock Text="Saved poses &amp; motion plans" FontSize="22" Margin="0,0,0,10"/>
                     <TextBlock Text="Capture commanded servo angles, draft a sequence, review the steps, then save. Arm motion explicitly before running. The robot does not auto-arm." TextWrapping="Wrap" Margin="0,0,0,12"/>
                     <TextBlock x:Name="PlanStatusText" Text="No plan running" Foreground="#6DDFC2" TextWrapping="Wrap" Margin="0,0,0,10"/>
-                    <Button x:Name="RefreshPlansButton" Content="Refresh saved plans and poses" Click="RefreshPlans_Click"/>
+                    <Button x:Name="RefreshPlansButton" Content="Refresh saved plans, poses and actions" Click="RefreshPlans_Click"/>
+                    <TextBlock Text="Actions use the robot’s shared keyframes, including custom actions saved in the web planner. Refresh after editing them elsewhere." TextWrapping="Wrap" Foreground="#92AAB4" Margin="4,8"/>
+                    <Button x:Name="OpenKeyframesButton" Content="Edit keyframes in web planner" Click="OpenKeyframes_Click"/>
                     <TextBlock Text="Saved servo pose" Margin="0,12,0,4"/>
                     <TextBox x:Name="PoseNameBox" Text="My pose" AutomationProperties.Name="Pose name"/>
                     <Button x:Name="CapturePoseButton" Content="Save current servo positions" Click="CapturePose_Click"/>
@@ -54,6 +60,9 @@
                     <Button x:Name="DraftPlanButton" Content="Draft steps for review" Click="DraftPlan_Click"/>
                     <TextBlock Text="Plan name" Margin="0,12,0,4"/>
                     <TextBox x:Name="PlanNameBox" Text="My plan" AutomationProperties.Name="Plan name"/>
+                    <TextBlock Text="Append an action from the robot" Margin="0,12,0,4"/>
+                    <ComboBox x:Name="PlanActionList" Margin="4" MinHeight="32" SelectionChanged="SharedAction_Changed" AutomationProperties.Name="Action to append to plan"/>
+                    <Button x:Name="InsertActionButton" Content="Append selected action" Click="InsertAction_Click"/>
                     <TextBlock Text="Editable steps (JSON): action, saved pose, or wait" Margin="0,10,0,4"/>
                     <TextBox x:Name="PlanStepsBox" Text="[]" AcceptsReturn="True" Height="200" VerticalScrollBarVisibility="Auto" HorizontalScrollBarVisibility="Auto" FontFamily="Consolas" AutomationProperties.Name="Editable plan steps"/>
                     <WrapPanel><Button x:Name="SavePlanButton" Content="Save plan" Click="SavePlan_Click"/><Button x:Name="NewPlanButton" Content="New plan" Click="NewPlan_Click"/></WrapPanel>

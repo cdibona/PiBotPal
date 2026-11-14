@@ -1,8 +1,10 @@
 package com.pibotpal.controller
 
 import android.app.Activity
+import android.content.Intent
 import android.graphics.BitmapFactory
 import android.graphics.Color
+import android.net.Uri
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -55,6 +57,12 @@ class MainActivity : Activity() {
     private lateinit var poseList: Spinner
     private lateinit var runPlanButton: Button
     private lateinit var planArmButton: Button
+    private lateinit var actionList: Spinner
+    private lateinit var planActionList: Spinner
+    private lateinit var runActionButton: Button
+    private lateinit var appendActionButton: Button
+    private lateinit var actionLibraryLabel: TextView
+    private var actionNames = emptyList<String>()
     private val planButtons = mutableListOf<Button>()
     private var savedPlans = JSONArray()
     private var savedPoses = JSONArray()
@@ -138,6 +146,16 @@ class MainActivity : Activity() {
         val row2 = LinearLayout(this)
         listOf("Stand" to "stand", "↓ Back" to "backward", "Sit" to "sit").forEach { (label, action) -> row2.addView(moveButton(label, action), LinearLayout.LayoutParams(0, dp(64), 1f)) }
         controllerPanel.addView(row2)
+        controllerPanel.addView(text("Shared actions", 18))
+        actionLibraryLabel = text("Connect to load the robot’s action library.", 13); controllerPanel.addView(actionLibraryLabel)
+        actionList = Spinner(this).apply { contentDescription = "Shared robot action"; onItemSelectedListener = selectionUpdates() }
+        controllerPanel.addView(actionList)
+        runActionButton = button("Run selected action") {
+            actionNames.getOrNull(actionList.selectedItemPosition - 1)?.let { name ->
+                command("move", JSONObject().put("name", name).put("speed", speed.progress + 10).put("steps", 1))
+            }
+        }; controllerPanel.addView(runActionButton)
+        controllerPanel.addView(button("Refresh action library") { command("plan_list", JSONObject(), completed = ::renderPlans) }.also { planButtons.add(it) })
         controllerPanel.addView(text("Microphone capture is never enabled by this app.", 13))
         controllerPanel.addView(text("Stop holds the last servo command; it does not remove power. Leaving this app stops motion. The robot service also has a heartbeat timeout.", 12))
         createPlanPanel(planPanel)
@@ -303,11 +321,13 @@ class MainActivity : Activity() {
         armButton.isEnabled = connected && foreground && !pending && !busy && stopping == 0
         cameraButton.isEnabled = connected && foreground && !pending && stopping == 0
         motionButtons.forEach { it.isEnabled = connected && foreground && armed && !busy && !planRunning && !pending && stopping == 0 }
-        if (::planArmButton.isInitialized) {
+        if (::runActionButton.isInitialized) runActionButton.isEnabled = connected && foreground && armed && !busy && !planRunning && !pending && stopping == 0 && actionList.selectedItemPosition > 0
+        if (::planArmButton.isInitialized && ::runPlanButton.isInitialized) {
             planArmButton.text = if (armed) "Disarm motion" else "Arm motion"
             planArmButton.isEnabled = connected && foreground && !pending && !busy && stopping == 0
             planButtons.forEach { it.isEnabled = connected && foreground && !pending && stopping == 0 }
             runPlanButton.isEnabled = connected && foreground && armed && !busy && !planRunning && !pending && stopping == 0 && planList.selectedItemPosition > 0
+            appendActionButton.isEnabled = connected && foreground && !pending && stopping == 0 && planActionList.selectedItemPosition > 0
         }
     }
 
@@ -318,7 +338,11 @@ class MainActivity : Activity() {
         planStatus = text("No plan running", 14); panel.addView(planStatus)
         planArmButton = button("Arm motion") { command("arm", JSONObject().put("armed", !armed)) }; panel.addView(planArmButton)
         fun action(label: String, click: () -> Unit) = button(label, click).also { planButtons.add(it); panel.addView(it) }
-        action("Refresh plans and poses") { command("plan_list", JSONObject(), completed = ::renderPlans) }
+        action("Refresh plans, poses and actions") { command("plan_list", JSONObject(), completed = ::renderPlans) }
+        panel.addView(text("Actions use the robot’s shared keyframes, including custom actions saved in the web planner. Refresh after editing them elsewhere.", 13))
+        action("Edit keyframes in web planner") {
+            client?.let { target -> safely { startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(target.baseUrl + "/#plan"))) } }
+        }
         poseName = editor("Pose name", "My pose"); panel.addView(poseName)
         action("Save current servo positions") { command("pose_save", JSONObject().put("name", poseName.text.toString()), refreshPlans = true) }
         poseList = Spinner(this); panel.addView(poseList)
@@ -349,6 +373,16 @@ class MainActivity : Activity() {
             }
         }
         planName = editor("Plan name", "My plan"); panel.addView(planName)
+        panel.addView(text("Append an action from the robot", 16))
+        planActionList = Spinner(this).apply { contentDescription = "Action to append to plan"; onItemSelectedListener = selectionUpdates() }
+        panel.addView(planActionList)
+        appendActionButton = button("Append selected action") {
+            actionNames.getOrNull(planActionList.selectedItemPosition - 1)?.let { name -> safely {
+                val steps = JSONArray(planSteps.text.toString())
+                steps.put(JSONObject().put("type", "action").put("name", name).put("speed", speed.progress + 10).put("steps", 1))
+                planSteps.setText(steps.toString(2))
+            } }
+        }; panel.addView(appendActionButton)
         panel.addView(text("Editable steps (JSON): action, saved pose, or wait", 13))
         planSteps = editor("Editable plan steps", "[]", true).apply { minLines = 8; typeface = android.graphics.Typeface.MONOSPACE }
         panel.addView(planSteps)
@@ -388,6 +422,7 @@ class MainActivity : Activity() {
     }
 
     private fun renderPlans(catalog: JSONObject) {
+        renderActions(catalog.optJSONArray("actions"))
         savedPoses = catalog.optJSONArray("poses") ?: JSONArray()
         savedPlans = catalog.optJSONArray("plans") ?: JSONArray()
         fun entries(rows: JSONArray, placeholder: String): List<String> = listOf(placeholder) + (0 until rows.length()).map { rows.getJSONObject(it).optString("name") }
@@ -397,6 +432,23 @@ class MainActivity : Activity() {
         planList.setSelection(0)
         replacingPlanList = false
         updateControls()
+    }
+    private fun renderActions(actions: JSONArray?) {
+        val selected = actionNames.getOrNull(actionList.selectedItemPosition - 1)
+        val planSelected = actionNames.getOrNull(planActionList.selectedItemPosition - 1)
+        actionNames = if (actions == null) emptyList() else (0 until actions.length())
+            .mapNotNull { actions.optJSONObject(it)?.optString("name")?.takeIf(String::isNotBlank) }.distinct()
+        val entries = listOf("Choose an action") + actionNames
+        actionList.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, entries)
+        planActionList.adapter = ArrayAdapter(this, android.R.layout.simple_spinner_dropdown_item, entries)
+        actionList.setSelection(if (selected == null) 0 else actionNames.indexOf(selected) + 1)
+        planActionList.setSelection(if (planSelected == null) 0 else actionNames.indexOf(planSelected) + 1)
+        actionLibraryLabel.text = if (actionNames.isEmpty()) "Action library unavailable. Connect or update the robot service; quick controls remain available."
+            else "${actionNames.size} actions from the robot. Edits in the web planner apply to these actions and the quick controls above."
+    }
+    private fun selectionUpdates() = object : AdapterView.OnItemSelectedListener {
+        override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) { updateControls() }
+        override fun onNothingSelected(parent: AdapterView<*>?) { updateControls() }
     }
     private fun editor(label: String, value: String, multiline: Boolean = false) = EditText(this).apply {
         hint = label; contentDescription = label; setText(value); textSize = 14f; setTextColor(Color.WHITE)

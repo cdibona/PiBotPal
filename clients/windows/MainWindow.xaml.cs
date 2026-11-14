@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.Diagnostics;
 using System.IO;
 using System.Text.Json.Nodes;
 using System.Windows;
@@ -13,7 +14,7 @@ public partial class MainWindow : Window
     private readonly SemaphoreSlim commandGate = new(1, 1);
     private readonly CancellationTokenSource lifetime = new();
     private CancellationTokenSource? videoCancellation;
-    private bool foreground, connected, pending, armed, busy, cameraOn, closing, closeCompleted;
+    private bool foreground, connected, pending, armed, busy, cameraOn, closing, closeCompleted, uiReady;
     private long commandEpoch;
     private int stopping;
     private bool planRunning, replacingPlanList;
@@ -24,6 +25,7 @@ public partial class MainWindow : Window
     public MainWindow()
     {
         InitializeComponent();
+        uiReady = true;
         AddressBox.Text = LoadAddress();
         UpdateControls();
         Loaded += (_, _) => { _ = PollAsync(); };
@@ -243,21 +245,24 @@ public partial class MainWindow : Window
     }
     private void UpdateControls()
     {
-        if (ArmButton is null) return;
+        if (!uiReady) return;
         ArmButton.IsEnabled = connected && foreground && !pending && !busy && stopping == 0;
         CameraButton.IsEnabled = connected && foreground && !pending && stopping == 0;
         ConnectButton.IsEnabled = !pending && stopping == 0;
         foreach (var button in new[] { LeftButton, RightButton, ForwardButton, BackwardButton, StandButton, SitButton })
             button.IsEnabled = connected && foreground && armed && !busy && !planRunning && !pending && stopping == 0;
-        foreach (var button in new[] { RefreshPlansButton, CapturePoseButton, DeletePoseButton, DraftPlanButton, SavePlanButton, DeletePlanButton })
+        RunActionButton.IsEnabled = connected && foreground && armed && !busy && !planRunning && !pending && stopping == 0 && ActionList.SelectedItem is string;
+        foreach (var button in new[] { RefreshPlansButton, RefreshActionsButton, OpenKeyframesButton, CapturePoseButton, DeletePoseButton, DraftPlanButton, SavePlanButton, DeletePlanButton })
             button.IsEnabled = connected && foreground && !pending && stopping == 0;
         RunPlanButton.IsEnabled = connected && foreground && armed && !busy && !planRunning && !pending && stopping == 0 && PlanList.SelectedItem is SavedItem;
+        InsertActionButton.IsEnabled = connected && foreground && !pending && stopping == 0 && PlanActionList.SelectedItem is string;
     }
 
     private async Task RefreshPlansAsync() => await CommandAsync("plan_list", new JsonObject(), RenderPlans);
     private async void RefreshPlans_Click(object sender, RoutedEventArgs e) => await RefreshPlansAsync();
     private void RenderPlans(JsonObject catalog)
     {
+        RenderActions(catalog["actions"] as JsonArray);
         var selected = (PlanList.SelectedItem as SavedItem)?.Id;
         var poses = (catalog["poses"] as JsonArray ?? new()).OfType<JsonObject>()
             .Select(p => new SavedItem(p["id"]!.GetValue<string>(), p["name"]!.GetValue<string>(), p.DeepClone().AsObject())).ToList();
@@ -271,6 +276,41 @@ public partial class MainWindow : Window
         if (selected is not null) PlanList.SelectedItem = plans.FirstOrDefault(p => p.Id == selected);
         replacingPlanList = false;
         UpdateControls();
+    }
+    private void RenderActions(JsonArray? actions)
+    {
+        var selected = ActionList.SelectedItem as string;
+        var planSelected = PlanActionList.SelectedItem as string;
+        var names = (actions ?? new()).OfType<JsonObject>().Select(action => action["name"]?.GetValue<string>())
+            .Where(name => !string.IsNullOrWhiteSpace(name)).Select(name => name!).Distinct().ToList();
+        ActionList.ItemsSource = names;
+        PlanActionList.ItemsSource = names;
+        ActionList.SelectedItem = selected is not null && names.Contains(selected) ? selected : null;
+        PlanActionList.SelectedItem = planSelected is not null && names.Contains(planSelected) ? planSelected : null;
+        ActionLibraryText.Text = names.Count == 0
+            ? "Action library unavailable. Connect or update the robot service; quick controls remain available."
+            : $"{names.Count} actions from the robot. Edits in the web planner apply to these actions and the quick controls above.";
+    }
+    private void SharedAction_Changed(object sender, SelectionChangedEventArgs e) => UpdateControls();
+    private async void RunAction_Click(object sender, RoutedEventArgs e)
+    {
+        if (armed && !busy && !planRunning && ActionList.SelectedItem is string name)
+            await CommandAsync("move", new JsonObject { ["name"] = name, ["speed"] = (int)SpeedSlider.Value, ["steps"] = 1 });
+    }
+    private void InsertAction_Click(object sender, RoutedEventArgs e)
+    {
+        if (PlanActionList.SelectedItem is not string name) return;
+        try {
+            var steps = JsonNode.Parse(PlanStepsBox.Text) as JsonArray ?? throw new ArgumentException("Steps must be a JSON array");
+            steps.Add(new JsonObject { ["type"] = "action", ["name"] = name, ["speed"] = (int)SpeedSlider.Value, ["steps"] = 1 });
+            PlanStepsBox.Text = steps.ToJsonString(new() { WriteIndented = true });
+        } catch (Exception error) { ErrorText.Text = error.Message; }
+    }
+    private void OpenKeyframes_Click(object sender, RoutedEventArgs e)
+    {
+        if (client is null) return;
+        try { Process.Start(new ProcessStartInfo(client.BaseUrl + "/#plan") { UseShellExecute = true }); }
+        catch (Exception error) { ErrorText.Text = error.Message; }
     }
     private async Task PlanOperationAsync(string tool, JsonObject args)
     {
