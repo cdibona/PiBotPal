@@ -33,7 +33,7 @@ export function initControllers({call}){
     <div class="controller-settings-grid">
       <article class="panel controller-mapping-panel"><div class="panel-heading"><h2>Action mapping</h2><span id="controller-map-state" class="tag">SAVED</span></div>
         <form id="controller-mapping-form" class="panel-body">
-          <p class="caption">Mappings take effect when both system motion and the controller are armed. Start always toggles controller arming. Saving a mapping never moves the robot.</p>
+          <p class="caption">Press Start or the header controller icon to arm controller actions and system motion together. Press again to disable controller actions. Saving a mapping never moves the robot.</p>
           <div class="controller-map-options"><label>Movement speed (%)<input id="controller-map-speed" type="number" min="1" max="80" step="1" value="40" required></label><label>Stick deadzone<input id="controller-map-deadzone" type="number" min="0.15" max="0.8" step="0.05" value="0.35" required></label></div>
           <div class="controller-mapping-scroll"><table class="controller-mapping-table"><thead><tr><th scope="col">Input</th><th scope="col">Action</th><th scope="col">Trigger</th></tr></thead><tbody id="controller-mapping-rows"></tbody></table></div>
           <div class="admin-actions"><button id="controller-map-save" class="primary" type="submit" disabled>Save mapping</button><button id="controller-map-reset" type="button" disabled>Restore defaults</button></div>
@@ -97,7 +97,7 @@ export function initControllers({call}){
   function render(next){
     section.querySelector('.controller-visual-layout').classList.remove('inputs-stale');
     data=next;buildInputs(next);const connected=Boolean(next.connected);$('controller-status').textContent=connected?'RECEIVER CONNECTED':'NOT CONNECTED';$('controller-status').className='tag '+(connected?'teal':'');
-    const control=next.control||{};$('controller-gate-state').textContent=statusLabels[control.state]||(!connected?'OFFLINE':next.enabled===false?'CONTROLLER DISARMED':'INPUT MONITOR');$('controller-gate-state').className='tag '+(control.state==='ready'?'teal':control.state==='running'?'orange':'');$('controller-gate-message').textContent=control.message||'Start toggles controller arming. System motion has a separate Arm motion control in the header.';
+    const control=next.control||{};$('controller-gate-state').textContent=statusLabels[control.state]||(!connected?'OFFLINE':next.armed===false||next.enabled===false?'CONTROLLER DISARMED':'INPUT MONITOR');$('controller-gate-state').className='tag '+(control.state==='ready'?'teal':control.state==='running'?'orange':'');$('controller-gate-message').textContent=control.message||'Press Start or the header controller icon to arm controller actions and system motion together.';
     const error=control.error||next.error||'';$('controller-error').textContent=error;$('controller-error').hidden=!error;$('controller-driver-note').textContent=next.note||'Receiver presence does not establish wireless pairing; press a control to verify live events.';
     axes.forEach(({meter,output},index)=>{const value=Number((next.raw_axes||next.axes||[])[index]||0);meter.value=value;output.textContent=value.toFixed(2);});
     const events=next.recent_events||[];const max=events.length?Math.max(...events.map(event=>Number(event.seq)||0)):-1;if(max<lastSeq)lastSeq=-1;

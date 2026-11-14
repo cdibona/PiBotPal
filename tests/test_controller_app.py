@@ -151,7 +151,7 @@ def test_held_direction_repeats_bounded_actions_until_release(client, monkeypatc
     assert robot.status()['armed'] and not robot.status()['estop']
 
 
-def test_controller_and_system_arming_are_both_required_and_held_input_needs_neutral(client, monkeypatch):
+def test_controller_arm_enables_motion_and_held_input_needs_neutral(client, monkeypatch):
     pad = connect(client)
     actions = short_actions(client, monkeypatch)
     wait_for(lambda: client.app.state.gamepad_driver.state['state'] == 'system_disarmed')
@@ -159,12 +159,12 @@ def test_controller_and_system_arming_are_both_required_and_held_input_needs_neu
     time.sleep(.1)
     assert actions == []
     call(client, 'controller_set_enabled', enabled=False)
-    call(client, 'arm', armed=True)
     wait_for(lambda: client.app.state.gamepad_driver.state['state'] == 'controller_disarmed')
     axis(pad, 'Y', -32767)
     time.sleep(.1)
     assert actions == []
     call(client, 'controller_set_enabled', enabled=True)
+    assert client.app.state.controller.status()['armed']
     wait_for(lambda: client.app.state.gamepad_driver.state['state'] == 'waiting_neutral')
     assert actions == []
     axis(pad, 'Y', 0)
@@ -381,3 +381,86 @@ def test_controller_event_stream_does_not_renew_system_motion_lease(client, monk
     wait_for(lambda: not client.app.state.controller.status()['armed'], timeout=2)
     assert client.app.state.controller.status()['estop']
     assert client.app.state.controller.status()['motion_id'] == 0
+
+
+@pytest.mark.parametrize('source', ['start', 'mcp'])
+@pytest.mark.parametrize('saved_enabled', [True, False])
+def test_one_controller_arm_allows_mapped_action_without_system_arm(client, monkeypatch, source, saved_enabled):
+    pad = connect(client)
+    pad.set_enabled(saved_enabled, notify=False)
+    robot = client.app.state.controller
+    actions = short_actions(client, monkeypatch)
+    # Merely attaching an enabled controller does not arm motion.
+    time.sleep(.12)
+    snapshot = call(client, 'controller_get')['value']
+    assert not snapshot['armed'] and not snapshot['system_armed']
+    if source == 'start':
+        tap(pad, 'Start')
+    else:
+        result = call(client, 'controller_set_enabled', enabled=True)['value']
+        assert result['armed'] and result['system_armed']
+    ready(client)
+    assert robot.status()['armed'] and robot.status()['servo_angles'] == [None]*12
+    assert actions == []  # Arming itself must not issue a movement.
+    tap(pad, 'South')
+    wait_for(lambda: len(actions) == 1)
+    assert actions[0]['name'] == 'stand'
+    assert client.app.state.media.status()['microphone']['muted']
+
+
+@pytest.mark.parametrize('source', ['start', 'mcp'])
+@pytest.mark.parametrize('failure', ['undervoltage', 'calibration', 'active_plan', 'persistence'])
+def test_controller_arm_preserves_system_guards(client, monkeypatch, source, failure):
+    pad = connect(client)
+    pad.set_enabled(False, notify=False)
+    robot = client.app.state.controller
+    spoken = []
+    monkeypatch.setattr(client.app.state.media, 'announce', spoken.append)
+    if failure == 'undervoltage':
+        monitor = client.app.state.power_monitor
+        previous = monitor.status
+        monkeypatch.setattr(monitor, 'status', lambda: {**previous(), 'under_voltage': True})
+    elif failure == 'calibration':
+        robot._errors.append('Calibration read failed: simulated invalid file')
+    elif failure == 'active_plan':
+        monkeypatch.setattr(client.app.state.plans, 'status', lambda: {'running': True})
+    else:
+        def fail_save(enabled):
+            raise OSError('Simulated disk failure')
+        monkeypatch.setattr(pad, '_save_enabled', fail_save)
+    if source == 'start':
+        tap(pad, 'Start')
+        wait_for(lambda: pad.status()['error'])
+    else:
+        assert call(client, 'controller_set_enabled', enabled=True)['isError']
+    assert not robot.status()['armed'] and robot.status()['motion_id'] == 0
+    assert robot.status()['servo_angles'] == [None]*12
+    assert not pad.status()['enabled']
+    assert not spoken
+
+
+@pytest.mark.parametrize('disarm', ['arm', 'stop'])
+def test_system_disarm_discards_start_queued_before_it_finishes(client, monkeypatch, disarm):
+    pad = connect(client)
+    robot = client.app.state.controller
+    # Inject a Start press during a disarm operation while the motion gate is
+    # held. Its delayed request must not undo the operation on the next poll.
+    if disarm == 'stop':
+        original = client.app.state.media.stop
+        def stop_with_queued_start():
+            tap(pad, 'Start')
+            return original()
+        monkeypatch.setattr(client.app.state.media, 'stop', stop_with_queued_start)
+        call(client, 'stop')
+    else:
+        original = robot.arm
+        def disarm_with_queued_start(armed):
+            result = original(armed)
+            if not armed:
+                tap(pad, 'Start')
+            return result
+        monkeypatch.setattr(robot, 'arm', disarm_with_queued_start)
+        call(client, 'arm', armed=False)
+    time.sleep(.15)
+    assert not robot.status()['armed'] and robot.status()['motion_id'] == 0
+    assert not pad.drain_notifications()

@@ -286,7 +286,7 @@ consistent with a PS2-style controller receiver; the USB identity does not prove
 the retail brand or that a wireless handset is paired. Move a stick or press a
 button to confirm activity. `controller_get` and `get_status.gamepad` expose the
 same input state, raw readings, recent events, saved mappings and control readiness.
-Controller arming is separate from system motion arming.
+Explicit controller arming also enables system motion, so it needs only one step.
 The monitor uses the Linux joystick interface directly, without a new library.
 
 For receiver `2563:0575` with the original sequential HID button codes, PiBotPal
@@ -298,15 +298,21 @@ Other receivers and already-corrected kernel mappings keep their Linux labels;
 telemetry includes the raw `button_codes` and selected `button_mapping`.
 
 The gamepad icon beside **Arm motion** and a fresh **Start** button press both
-toggle controller arming. The icon is filled when armed and connected, outlined
+toggle controller arming. Arming from either control also arms system motion;
+the first Start press works even when the saved input preference is already on.
+The icon is filled when both are armed and the receiver is connected, outlined
 when disarmed, and unavailable when no receiver is attached. Controller input is
-armed by default; the choice persists in private `controller.json` across page
-reloads, service restarts, and unplug/replug. Disarming blocks mapped actions
+enabled by default; the preference persists in private `controller.json` across page
+reloads, service restarts, and unplug/replug. Startup and connection alone never
+arm system motion. Controller disarming blocks mapped actions
 but keeps the raw input monitor and Start available. Startup
 button states, held/repeated presses and rapid switch bounce never toggle arming.
 `controller_set_enabled(enabled)` provides the same shared setting over MCP;
 `controller_get` and `get_status.gamepad` report `enabled` (saved preference),
-`armed` (enabled and connected), `attached`, `connected`, and `start_listening`.
+`armed` (enabled, connected, and system armed), `system_armed`, `attached`,
+`connected`, and `start_listening`. With no connected receiver, saving the input
+preference does not arm motion. Undervoltage, invalid calibration/budget, and
+active plan/test checks still apply to controller arming.
 
 The Controllers page shows a gamepad diagram, numerical axes, and a recent input
 log. The read-only `/controllers/events` stream updates at up to 20 Hz; 350 ms
@@ -334,7 +340,7 @@ is adjustable from 1–80 and stick dead zone from 0.15–0.8. MCP tools
 `controller_save_mapping` and `controller_reset_mapping` share the same private
 `controller-mapping.json`. Saving/resetting does not start motion.
 
-Mapped movement requires both controller arming and system **Arm motion**.
+Arming the controller enables mapped movement and system motion together.
 After arming, reconnecting, or changing a mapping, release mapped controls to
 neutral before the next action. Releasing a held direction cancels its current
 motion while retaining system arming; controller disarm or USB disconnect also
@@ -342,13 +348,17 @@ cancels its motion. Unrelated manual or planned actions are not canceled by a
 controller release. Conflicting directions stop controller motion, and a
 continuous hold is limited to ten seconds before release is required: USB
 receiver presence alone cannot detect a lost wireless handset. Busy actions
-are not queued for later playback. Start remains separate from system arming;
-Select and the header STOP cancel work and disarm. MCP `halt` cancels manual
+are not queued for later playback. Controller disarming leaves system arming
+available for other interfaces. Select and the header STOP cancel work and
+disarm; system disarm/STOP also discard pending Start requests so an earlier
+press cannot re-arm later. A fresh Start press or controller-icon click can
+explicitly re-arm. MCP `halt` cancels manual
 motion while preserving arming, unlike `stop`.
 
 Explicit controller state changes say **controller armed** or **controller
 disarmed** through the robot speaker. The system **Arm motion** button and MCP
 `arm` tool say **system armed** or **system disarmed** after successful changes.
+Controller arming announces **system armed** as well when it enables system motion.
 Startup, reconnection and unchanged settings remain silent. Speech runs on a
 separate worker, with only the latest pending state per source retained. STOP
 cancels queued/current audio. Audio errors appear in speaker status without

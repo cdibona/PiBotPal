@@ -10,6 +10,12 @@ import pytest
 from pibotpal.gamepad import EVENT, GamepadMonitor, discover_gamepads
 
 
+
+def arming_event(monitor, armed, *, arm_system=False):
+    return {'armed': armed, 'arm_system': arm_system,
+            'input_epoch': monitor.status()['input_epoch']}
+
+
 def device(identity='gamepad-a'):
     return {'id':identity,'name':'USB WirelessGamepad','vendor_id':'2563','product_id':'0575',
             'path':'/dev/input/js0','stable_path':'/dev/input/by-id/usb-test-joystick','readable':True}
@@ -57,11 +63,11 @@ def test_shanwan_sequential_hid_map_uses_physical_start_button(monkeypatch):
     assert monitor.status()['armed'] and monitor.drain_notifications() == []
     monitor._events(EVENT.pack(3, 1, 1, 9))
     assert not monitor.status()['armed'] and monitor.status()['connected']
-    assert monitor.drain_notifications() == [{'armed':False}]
+    assert monitor.drain_notifications() == [arming_event(monitor, False)]
     now[0] = 2.0
     monitor._events(EVENT.pack(4, 0, 1, 9)+EVENT.pack(5, 1, 1, 9))
     assert monitor.status()['armed']
-    assert monitor.drain_notifications() == [{'armed':True}]
+    assert monitor.drain_notifications() == [arming_event(monitor, True)]
     monitor.close()
 
 
@@ -305,14 +311,14 @@ def test_bad_preference_and_failed_save_do_not_silently_enable_input(tmp_path,mo
     assert monitor.status()['enabled'] and not path.exists()
 
 
-def start_monitor(tmp_path=None, *, clock=None):
+def start_monitor(tmp_path=None, *, clock=None, system_armed=None):
     def caps(fd):
         data=fake_caps(fd)
         data.update(buttons=[False,False,False],button_names=['South','Start','East'])
         return data
     monitor=GamepadMonitor(discover=lambda:[device()],opener=lambda p:7,close_fd=lambda fd:None,
                            capability_reader=caps,settings_path=tmp_path/'controller.json' if tmp_path else None,
-                           monotonic=clock)
+                           monotonic=clock, system_armed=system_armed)
     monitor._refresh()
     return monitor
 
@@ -327,7 +333,7 @@ def test_start_toggles_disarm_and_rearm_with_listener_still_connected(tmp_path):
     monitor._events(press[:3]);assert monitor.status()['armed']
     monitor._events(press[3:])
     assert not monitor.status()['armed'] and monitor.status()['connected']
-    assert monitor.drain_notifications()==[{'armed':False}]
+    assert monitor.drain_notifications()==[arming_event(monitor, False)]
     monitor._events(EVENT.pack(3,32767,2,0)+EVENT.pack(4,1,1,0))
     assert monitor.status()['axes']==[0.,0.] and monitor.status()['buttons']==[False]*3
     # A held Start, regardless of elapsed time, cannot arm again.
@@ -335,7 +341,7 @@ def test_start_toggles_disarm_and_rearm_with_listener_still_connected(tmp_path):
     assert not monitor.status()['armed'] and monitor.drain_notifications()==[]
     monitor._events(EVENT.pack(5,0,1,1)+press)
     assert monitor.status()['armed'] and monitor.status()['connected']
-    assert monitor.drain_notifications()==[{'armed':True}]
+    assert monitor.drain_notifications()==[arming_event(monitor, True)]
     assert json.loads((tmp_path/'controller.json').read_text())['enabled'] is True
     monitor.close()
 
@@ -347,11 +353,11 @@ def test_start_ignores_initial_held_state_contact_bounce_and_hotplug():
     assert monitor.status()['armed'] and monitor.drain_notifications()==[]
     monitor._events(released+pressed)
     assert not monitor.status()['armed']
-    assert monitor.drain_notifications()==[{'armed':False}]
+    assert monitor.drain_notifications()==[arming_event(monitor, False)]
     now[0]=1.1;monitor._events(released+pressed)
     assert not monitor.status()['armed'] and monitor.drain_notifications()==[]
     now[0]=1.5;monitor._events(released+pressed)
-    assert monitor.status()['armed'] and monitor.drain_notifications()==[{'armed':True}]
+    assert monitor.status()['armed'] and monitor.drain_notifications()==[arming_event(monitor, True)]
     monitor._disconnect();monitor._refresh()
     monitor._events(EVENT.pack(0,1,0x81,1)+pressed)
     assert monitor.status()['armed'] and monitor.drain_notifications()==[]
@@ -365,9 +371,9 @@ def test_explicit_transitions_only_notify_actual_arming_and_never_noops():
     connected=start_monitor()
     connected.set_enabled(True);assert connected.drain_notifications()==[]
     connected.set_enabled(False);connected.set_enabled(False)
-    assert connected.drain_notifications()==[{'armed':False}]
+    assert connected.drain_notifications()==[arming_event(connected, False)]
     connected.set_enabled(True)
-    assert connected.drain_notifications()==[{'armed':True}]
+    assert connected.drain_notifications()==[arming_event(connected, True)]
     connected._disconnect();connected._refresh()
     assert connected.drain_notifications()==[]
     connected.close()
@@ -387,7 +393,7 @@ def test_failed_start_preference_save_keeps_state_and_monitor_usable(monkeypatch
     monkeypatch.setattr(monitor,'_save_enabled',lambda enabled:None)
     now[0]=2.0
     monitor._events(EVENT.pack(3,0,1,1)+EVENT.pack(4,1,1,1))
-    assert not monitor.status()['armed'] and monitor.drain_notifications()==[{'armed':False}]
+    assert not monitor.status()['armed'] and monitor.drain_notifications()==[arming_event(monitor, False)]
     assert monitor.status()['error'] is None
     monitor.close()
 
@@ -482,11 +488,120 @@ def test_start_toggle_preserves_raw_edge_and_sets_event_epoch_after_transition()
     events = monitor.drain_input_events()
     assert len(events) == 1 and events[0]['name'] == 'Start' and events[0]['value'] is True
     assert events[0]['seq'] == 2 and events[0]['epoch'] == state['input_epoch']
-    assert monitor.drain_notifications() == [{'armed':False}]
+    assert monitor.drain_notifications() == [arming_event(monitor, False)]
     now[0] = 2.0
     monitor._events(EVENT.pack(3, 0, 1, 1)+EVENT.pack(4, 1, 1, 1))
     assert monitor.status()['armed'] and monitor.status()['input_epoch'] == old_epoch+2
-    assert monitor.drain_notifications() == [{'armed':True}]
+    assert monitor.drain_notifications() == [arming_event(monitor, True)]
+    monitor.close()
+
+
+def test_start_requests_system_arm_once_from_saved_enabled_startup():
+    system = {'armed': False}
+    monitor = start_monitor(system_armed=lambda: system['armed'])
+    initial_epoch = monitor.status()['input_epoch']
+    monitor._events(EVENT.pack(0, 0, 0x81, 1))
+    assert monitor.drain_notifications() == [] and not system['armed']
+    monitor._events(EVENT.pack(1, 1, 1, 1))
+    event, = monitor.drain_notifications()
+    assert event == arming_event(monitor, True, arm_system=True)
+    assert event['input_epoch'] > initial_epoch
+    assert not system['armed'], 'The monitor must not bypass application arming guards'
+    assert monitor.apply_arm_request(event['input_epoch'], lambda: system.update(armed=True))
+    assert system['armed']
+    # Repeated held reports produce no additional request.
+    monitor._events(EVENT.pack(2, 1, 1, 1))
+    assert monitor.drain_notifications() == []
+    monitor.close()
+
+
+def test_second_start_press_cancels_queued_arm_before_app_processes_it():
+    now = [1.0]
+    monitor = start_monitor(clock=lambda: now[0], system_armed=lambda: False)
+    monitor._events(EVENT.pack(0, 0, 0x81, 1) + EVENT.pack(1, 1, 1, 1))
+    first, = monitor.drain_notifications()
+    now[0] = 2.0
+    monitor._events(EVENT.pack(2, 0, 1, 1) + EVENT.pack(3, 1, 1, 1))
+    assert not monitor.status()['enabled']
+    assert monitor.drain_notifications() == [arming_event(monitor, False)]
+    calls = []
+    assert not monitor.apply_arm_request(first['input_epoch'], lambda: calls.append('armed'))
+    assert calls == []
+    monitor.close()
+
+
+def test_system_stop_discard_invalidates_already_dequeued_start_request():
+    monitor = start_monitor(system_armed=lambda: False)
+    monitor._events(EVENT.pack(0, 0, 0x81, 1) + EVENT.pack(1, 1, 1, 1))
+    event, = monitor.drain_notifications()
+    monitor.discard_pending_actions()
+    calls = []
+    assert not monitor.apply_arm_request(event['input_epoch'], lambda: calls.append('armed'))
+    assert calls == [] and monitor.drain_input_events() == []
+    assert monitor.drain_notifications() == []
+    assert monitor.status()['enabled'], 'Discarding stale work must preserve the saved input preference'
+    monitor.close()
+
+
+@pytest.mark.parametrize('invalidate', ['disable', 'disconnect', 'new_epoch'])
+def test_queued_start_request_cannot_arm_after_input_session_changes(invalidate):
+    monitor = start_monitor(system_armed=lambda: False)
+    monitor._events(EVENT.pack(0, 0, 0x81, 1) + EVENT.pack(1, 1, 1, 1))
+    event, = monitor.drain_notifications()
+    if invalidate == 'disable':
+        monitor.set_enabled(False)
+    elif invalidate == 'disconnect':
+        monitor._disconnect()
+        monitor._refresh()
+    else:
+        monitor.set_enabled(True, request_system_arm=True)
+    calls = []
+    assert not monitor.apply_arm_request(event['input_epoch'], lambda: calls.append('armed'))
+    assert calls == []
+    monitor.close()
+
+
+def test_failed_start_guard_disarms_input_and_records_failure(tmp_path):
+    monitor = start_monitor(tmp_path, system_armed=lambda: False)
+    monitor._events(EVENT.pack(0, 0, 0x81, 1) + EVENT.pack(1, 1, 1, 1))
+    event, = monitor.drain_notifications()
+    def reject():
+        raise ValueError('Pi undervoltage is active')
+    with pytest.raises(ValueError, match='undervoltage'):
+        monitor.apply_arm_request(event['input_epoch'], reject)
+    state = monitor.status()
+    assert not state['enabled'] and not state['armed']
+    assert 'undervoltage' in state['error']
+    assert json.loads((tmp_path/'controller.json').read_text())['enabled'] is False
+    assert monitor.drain_notifications() == []
+    monitor.close()
+
+
+def test_failed_preference_save_never_calls_system_arm(tmp_path, monkeypatch):
+    monitor = start_monitor(tmp_path)
+    monitor.set_enabled(False)
+    calls = []
+    def failed(enabled):
+        raise OSError('disk full')
+    monkeypatch.setattr(monitor, '_save_enabled', failed)
+    with pytest.raises(OSError, match='disk full'):
+        monitor.set_enabled(True, arm_system=lambda: calls.append('armed'))
+    assert calls == [] and not monitor.status()['enabled']
+    assert json.loads((tmp_path/'controller.json').read_text())['enabled'] is False
+    monitor.close()
+
+
+def test_failed_system_arm_restores_preference_without_announcement(tmp_path):
+    monitor = start_monitor(tmp_path)
+    monitor.set_enabled(False)
+    monitor.drain_notifications()
+    def reject():
+        raise ValueError('Repair calibration before arming')
+    with pytest.raises(ValueError, match='calibration'):
+        monitor.set_enabled(True, arm_system=reject)
+    assert not monitor.status()['enabled'] and not monitor.status()['armed']
+    assert json.loads((tmp_path/'controller.json').read_text())['enabled'] is False
+    assert monitor.drain_notifications() == []
     monitor.close()
 
 

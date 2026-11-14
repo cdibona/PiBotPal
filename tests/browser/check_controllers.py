@@ -10,7 +10,7 @@ inputs += [{'id':f'axis:{axis}:{sign}','label':f'{axis} {sign}','kind':'axis'} f
 mapping={'version':1,'speed':40,'deadzone':.35,'inputs':inputs,'reserved':['button:Start'],'actions':[{'id':name,'label':name.title(),'hold':name in ('forward','backward','turn left','turn right')} for name in ('forward','backward','turn left','turn right','stand','sit','ready','wave','stop')],
  'bindings':[{'input':'button:South','action':'stand','mode':'press'},{'input':'axis:Y:-','action':'forward','mode':'hold'},{'input':'button:Select','action':'stop','mode':'press'}]}
 controller={'devices':[{'id':'usb','name':'USB WirelessGamepad','vendor_id':'2563','product_id':'0575','stable_path':'/dev/input/by-id/test-joystick','readable':True}],
- 'active_device_id':'usb','connected':True,'enabled':False,'raw_axes':[0]*6,'raw_buttons':[False]*6,'axes':[0]*6,'buttons':[False]*6,'axis_names':['X','Y','Z','RZ','Hat X','Hat Y'],'button_names':['South','East','West','North','Select','Start'],'events_seen':0,'input_revision':17,'recent_events':[],
+ 'active_device_id':'usb','connected':True,'attached':True,'enabled':False,'armed':False,'system_armed':False,'raw_axes':[0]*6,'raw_buttons':[False]*6,'axes':[0]*6,'buttons':[False]*6,'axis_names':['X','Y','Z','RZ','Hat X','Hat Y'],'button_names':['South','East','West','North','Select','Start'],'events_seen':0,'input_revision':17,'recent_events':[],
  'mapping':mapping,'control':{'state':'controller_disarmed','message':'Controller disarmed. Start toggles controller arming.'}}
 
 with sync_playwright() as p:
@@ -58,6 +58,7 @@ with sync_playwright() as p:
   assert page.locator('#controller-event-count').inner_text()=='17 EVENTS'
   assert page.locator('#controller-mapping-rows tr').count()==len(inputs)
   assert page.get_by_label('Action for Start',exact=True).count()==0
+  assert 'arm controller actions and system motion together' in page.locator('#controller-mapping-form').inner_text()
   # A press and release between display frames still leaves a visible tap.
   page.evaluate('''()=>{const s=JSON.parse(JSON.stringify(window.initialController));const now=Date.now()/1000;s.recent_events=[{seq:1,time:now,kind:'button',index:0,name:'South',value:true},{seq:2,time:now,kind:'button',index:0,name:'South',value:false}];s.events_seen=2;window.controllerStreams.at(-1).emit(s);}''')
   assert 'is-tapped' in page.locator('[data-pad-button=South]').get_attribute('class')

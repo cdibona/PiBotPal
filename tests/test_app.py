@@ -183,7 +183,7 @@ def test_camera_catalog_and_controller_monitor_are_read_only_in_simulation(clien
     assert call(client,'get_status')['structuredContent']['servo_angles']==[None]*12
 
 
-def test_usb_input_toggle_is_persisted_shared_and_never_arms(client,tmp_path):
+def test_usb_preference_without_receiver_is_persisted_shared_and_never_arms(client,tmp_path):
     original=call(client,'controller_get')['structuredContent']
     assert original['enabled'] and not original['attached']
     for enabled in (False,True):
@@ -335,15 +335,20 @@ def test_controller_start_and_mcp_arming_share_announcements_without_system_moti
     assert spoken==[]
     monitor._events(EVENT.pack(3,1,1,0))
     deadline=time.monotonic()+1
-    while not spoken and time.monotonic()<deadline:time.sleep(.01)
-    assert spoken==['controller disarmed']
-    result=call(client,'controller_set_enabled',enabled=True)['structuredContent']
-    assert result['armed']
-    deadline=time.monotonic()+1
     while len(spoken)<2 and time.monotonic()<deadline:time.sleep(.01)
-    assert spoken==['controller disarmed','controller armed']
-    call(client,'controller_set_enabled',enabled=True)
+    assert spoken==['system armed','controller armed']
+    assert client.app.state.controller.status()['armed']
+    result=call(client,'controller_set_enabled',enabled=True)['structuredContent']
+    assert result['armed'] and result['system_armed']
     time.sleep(.08)
     assert len(spoken)==2
+    call(client,'controller_set_enabled',enabled=False)
+    assert spoken[-1]=='controller disarmed'
+    assert client.app.state.controller.status()['armed']
+    call(client,'controller_set_enabled',enabled=True)
+    assert spoken[-1]=='controller armed' and len(spoken)==4
+    call(client,'arm',armed=False)
+    call(client,'controller_set_enabled',enabled=True)
+    assert spoken[-3:]==['system disarmed','system armed','controller armed']
     state=call(client,'get_status')['structuredContent']
-    assert not state['armed'] and state['servo_angles']==[None]*12 and state['microphone']['muted']
+    assert state['armed'] and state['servo_angles']==[None]*12 and state['microphone']['muted']

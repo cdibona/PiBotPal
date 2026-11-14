@@ -224,7 +224,7 @@ class GamepadDriver:
         if reason:
             self.reset()
             messages = {'offline': 'Connect a controller.', 'controller_disarmed': 'Controller actions are off; input monitoring remains live.',
-                        'system_disarmed': 'Arm motion in the header to use mapped actions.',
+                        'system_disarmed': 'Press Start or the controller icon to arm controller actions.',
                         'blocked': 'A plan or test is running. Stop it before using controller actions.',
                         'busy': 'Robot is busy. Release controls and try again when it finishes.'}
             self.state.update(state=reason, message=messages[reason])

@@ -106,7 +106,8 @@ def _controller_layout(device, data):
 
 class GamepadMonitor:
     def __init__(self, simulate=False, *, discover=None, opener=None, read=None,
-                 close_fd=None, capability_reader=None, poll=None, settings_path=None, monotonic=None):
+                 close_fd=None, capability_reader=None, poll=None, settings_path=None, monotonic=None,
+                 system_armed=None):
         self.simulate = simulate
         self._discover = discover or discover_gamepads
         self._open = opener or (lambda path: os.open(path, os.O_RDONLY|os.O_NONBLOCK|os.O_CLOEXEC))
@@ -114,6 +115,7 @@ class GamepadMonitor:
         self._capabilities = capability_reader or capabilities
         self._poll = poll or (lambda fd,timeout: bool(select.select([fd],[],[],timeout)[0]))
         self._monotonic = monotonic or time.monotonic
+        self._system_armed = system_armed
         self._lock = threading.RLock()
         # Descriptor changes and reads are serialized separately from status.
         # select() runs without this lock; its generation is checked before read.
@@ -139,6 +141,7 @@ class GamepadMonitor:
         self._start_ready = False
         self._last_start_toggle = None
         self._arming_error = None
+        self._pending_system_arm = None
         self._notifications = deque(maxlen=64)
         self._input_events = deque(maxlen=512)
         self._state = {'devices':[], 'active_device_id':None, 'connected':False,
@@ -190,10 +193,18 @@ class GamepadMonitor:
         with self._lock:
             return self.status(), self.drain_input_events()
 
+    def discard_pending_actions(self):
+        """Barrier for system disarm/STOP: earlier Start requests cannot rearm."""
+        with self._io_lock:
+            with self._lock:
+                self._invalidate_input()
+                self._notifications.clear()
+
     def _invalidate_input(self):
         """Called under the state lock when queued actions are no longer valid."""
         self._state['input_epoch'] += 1
         self._input_events.clear()
+        self._pending_system_arm = None
 
     def _save_enabled(self, enabled):
         if self._settings_path is None:
@@ -211,24 +222,32 @@ class GamepadMonitor:
             if os.path.exists(filename):
                 os.unlink(filename)
 
-    def set_enabled(self, enabled):
+    def set_enabled(self, enabled, *, notify=True, request_system_arm=False, arm_system=None):
         """Arm normal controller input; Start remains listened to when disarmed.
 
         The historical enabled preference is retained on disk and over MCP.
-        This state is independent of the robot's system motion arming.
+        The app can arm motion under the same device lock. Start requests are
+        checked by the app before granting system motion permission.
         """
         if type(enabled) is not bool:
             raise ValueError('enabled must be a boolean')
         with self._io_lock:
             if self._stop.is_set():
                 raise RuntimeError('Controller input monitor is closed')
-            before = self.status()['armed']
+            previous = self.status()
+            before = previous['armed']
             self._save_enabled(enabled)
+            try:
+                if enabled and previous['connected'] and arm_system is not None:
+                    arm_system()
+            except Exception:
+                self._save_enabled(previous['enabled'])
+                raise
             with self._lock:
                 self._arming_error = None
                 changed = self._state['enabled'] != enabled
                 self._state['enabled'] = enabled
-                if changed:
+                if changed or request_system_arm:
                     self._invalidate_input()
                     self._state.update(axes=[0.0] * len(self._state['axes']),
                                        buttons=[False] * len(self._state['buttons']),
@@ -236,10 +255,37 @@ class GamepadMonitor:
             if self._fd is None and not self.simulate:
                 self._refresh()
             state = self.status()
-            if before != state['armed']:
+            if notify and (before != state['armed'] or request_system_arm):
                 with self._lock:
-                    self._notifications.append({'armed': state['armed']})
+                    if request_system_arm:
+                        self._pending_system_arm = state['input_epoch']
+                    self._notifications.append({'armed': state['armed'],
+                                                'arm_system': request_system_arm,
+                                                'input_epoch': state['input_epoch']})
             return state
+
+    def apply_arm_request(self, input_epoch, operation):
+        """Resolve a deliberate Start request only in its original input session.
+
+        Stop/disconnect/new toggles invalidate queued requests. The device lock
+        prevents a new disarm racing between validation and system arming.
+        """
+        with self._io_lock:
+            state = self.status()
+            if (self._stop.is_set() or not state['armed']
+                    or state['input_epoch'] != input_epoch
+                    or self._pending_system_arm != input_epoch):
+                return False
+            try:
+                operation()
+            except Exception as exc:
+                self.set_enabled(False, notify=False)
+                with self._lock:
+                    self._arming_error = f'Controller arming rejected: {exc}'
+                raise
+            with self._lock:
+                self._pending_system_arm = None
+            return True
 
     def dispatch(self, operation, *args, input_epoch, held_input=None, threshold=.35, **kwargs):
         """Submit a bounded action only while this exact input session is armed.
@@ -369,7 +415,10 @@ class GamepadMonitor:
                         if self._last_start_toggle is None or now - self._last_start_toggle >= .25:
                             self._last_start_toggle = now
                             try:
-                                self.set_enabled(not self._state['enabled'])
+                                system_armed = self._system_armed() if self._system_armed is not None else True
+                                pending_arm = self._pending_system_arm == self._state['input_epoch']
+                                enabled = not (self._state['enabled'] and (system_armed or pending_arm))
+                                self.set_enabled(enabled, request_system_arm=enabled and self._system_armed is not None)
                             except (OSError, RuntimeError) as exc:
                                 # A failed save must neither change the latch
                                 # nor kill the live input-monitor thread.

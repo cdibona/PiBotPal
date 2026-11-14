@@ -43,7 +43,8 @@ def create_app(controller=None, media=None):
     server_instance_id = uuid4().hex
     plans = PlanStore(media.root, controller)
     hardware_options = HardwareOptions(media.root)
-    gamepad = GamepadMonitor(simulate=controller.simulate, settings_path=media.root / 'controller.json')
+    gamepad = GamepadMonitor(simulate=controller.simulate, settings_path=media.root / 'controller.json',
+                            system_armed=lambda: controller.status()['armed'])
     controller_mappings = MappingStore(media.root / 'controller-mapping.json')
     gamepad_driver = GamepadDriver(controller_mappings)
     power_monitor = PowerMonitor(simulate=controller.simulate)
@@ -87,11 +88,12 @@ def create_app(controller=None, media=None):
 
     def controller_snapshot():
         state = gamepad.status()
+        state['system_armed'] = controller.status()['armed']
+        state['armed'] = bool(state['armed'] and state['system_armed'])
         state['mapping'] = controller_mappings.public(state)
         state['control'] = dict(gamepad_driver.state)
-        state['motion_enabled'] = bool(state['armed'] and controller.status()['armed']
-                                       and state['control']['state'] in ('ready', 'running'))
-        state['note'] = 'Live input monitoring stays available while disarmed. Start toggles controller arming; mapped motion also requires Arm motion.'
+        state['motion_enabled'] = bool(state['armed'] and state['control']['state'] in ('ready', 'running'))
+        state['note'] = 'Start or the controller icon arms controller actions and system motion together. Live input monitoring stays available while disarmed.'
         return state
 
     assistant = Assistant(settings, mcp.list_tools, call_robot_tool)
@@ -151,6 +153,8 @@ def create_app(controller=None, media=None):
                 await invoke(plans.stop)
                 await invoke(examples.stop)
             result = await invoke(controller.arm, armed)
+            if not armed:
+                await invoke(gamepad.discard_pending_actions)
             now_armed = controller.status()['armed']
             if was_armed != now_armed:
                 gamepad_driver.reset()
@@ -167,6 +171,7 @@ def create_app(controller=None, media=None):
         gamepad.drain_input_events()
         gamepad.drain_notifications()
         await invoke(media.stop)
+        await invoke(gamepad.discard_pending_actions)
 
     @mcp.tool()
     async def stop() -> dict:
@@ -270,16 +275,35 @@ def create_app(controller=None, media=None):
 
     @mcp.tool()
     async def controller_set_enabled(enabled: bool) -> dict:
-        """Persist controller arming. Start remains available while disarmed; never arms system motion or moves the robot."""
+        """Arm connected controller and system motion together, or disable controller actions. Arming never moves servos. No receiver: save preference only."""
         async with motion_gate:
-            previous = gamepad.status()['enabled']
-            await invoke(gamepad.set_enabled, enabled)
-            if previous != enabled:
+            previous = controller_snapshot()
+            await invoke(gamepad.set_enabled, enabled, notify=False,
+                         request_system_arm=enabled and not previous['armed'],
+                         arm_system=arm_from_controller if enabled else None)
+            current = controller_snapshot()
+            if previous['enabled'] != enabled or previous['armed'] != current['armed']:
                 if gamepad_driver.owns(controller.status()):
                     await invoke(controller.halt)
                     gamepad_driver.halted()
                 gamepad_driver.reset()
+                gamepad.drain_input_events()
+            lease['last_seen'] = time.monotonic()
+            if previous['system_armed'] != current['system_armed']:
+                await announce_arming('system', current['system_armed'])
+            if previous['armed'] != current['armed']:
+                await announce_arming('controller', current['armed'])
         return controller_snapshot()
+
+    def arm_from_controller():
+        # Used only inside motion_gate and the monitor's device lock, by both
+        # explicit MCP/UI requests and fresh Start presses. Never called on
+        # startup, reconnect, or merely observing a saved enabled preference.
+        ensure_manual()
+        if power_monitor.status()['under_voltage'] is True:
+            raise ValueError('Pi undervoltage is active; wait for power to recover before arming')
+        if not controller.status()['armed']:
+            controller.arm(True)
 
     @mcp.tool()
     async def controller_save_mapping(speed: int, deadzone: float, bindings: list[dict]) -> dict:
@@ -522,6 +546,24 @@ def create_app(controller=None, media=None):
             # escape cancellation after an emergency stop has returned.
             async with motion_gate:
                 for event in gamepad.drain_notifications():
+                    current = gamepad.status()
+                    if (event['input_epoch'] != current['input_epoch']
+                            or event['armed'] != current['armed']):
+                        continue
+                    if event.get('arm_system'):
+                        previous_system = controller.status()['armed']
+                        try:
+                            applied = await invoke(gamepad.apply_arm_request, event['input_epoch'], arm_from_controller)
+                        except Exception as exc:
+                            gamepad_driver.failed(exc)
+                            continue
+                        if not applied:
+                            continue
+                        gamepad_driver.reset()
+                        gamepad.drain_input_events()
+                        lease['last_seen'] = time.monotonic()
+                        if not previous_system:
+                            await announce_arming('system', True)
                     await announce_arming('controller', event['armed'])
                 pad, input_events = gamepad.read_input()
                 robot = controller.status()

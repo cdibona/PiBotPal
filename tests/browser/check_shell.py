@@ -11,12 +11,13 @@ with sync_playwright() as p:
     browser = p.chromium.launch(executable_path='/usr/bin/chromium', headless=True, args=['--no-sandbox'])
     for width in (1440, 1024, 768, 390, 320):
         context = browser.new_context(viewport={'width': width, 'height': 1000}, color_scheme='dark')
-        page = context.new_page(); errors = []; calls = []
-        controller = {'enabled': True, 'attached': True, 'outage': False, 'fail_set': False}
+        page = context.new_page(); errors = []; calls = []; controller_changes = []
+        controller = {'enabled': True, 'system_armed': False, 'attached': True, 'outage': False, 'fail_set': False}
         def gamepad():
             return {'enabled': controller['enabled'], 'attached': controller['attached'],
                     'connected': controller['attached'],
-                    'armed': controller['enabled'] and controller['attached'], 'start_listening': controller['attached'],
+                    'armed': controller['enabled'] and controller['attached'] and controller['system_armed'],
+                    'system_armed': controller['system_armed'], 'start_listening': controller['attached'],
                     'devices': [{'id': 'usb-pad', 'name': 'USB WirelessGamepad'}] if controller['attached'] else [],
                     'axes': [], 'buttons': [], 'motion_enabled': False}
         page.on('pageerror', lambda error: errors.append(str(error)))
@@ -31,15 +32,18 @@ with sync_playwright() as p:
                 else:
                     name = request['params']['name']; calls.append(name)
                     if name == 'get_status':
-                        value = {'server_instance_id': 'mock', 'armed': False, 'busy': False, 'servo_angles': [None]*12, 'ultrasonic': {'valid': False}, 'camera': {'enabled': False}, 'cameras': [], 'microphone': {'enabled': False}, 'speaker': {}, 'recordings': [], 'plan': {'running': False}, 'examples': {}, 'gamepad': gamepad()}
+                        value = {'server_instance_id': 'mock', 'armed': controller['system_armed'], 'busy': False, 'servo_angles': [None]*12, 'ultrasonic': {'valid': False}, 'camera': {'enabled': False}, 'cameras': [], 'microphone': {'enabled': False}, 'speaker': {}, 'recordings': [], 'plan': {'running': False}, 'examples': {}, 'gamepad': gamepad()}
                     elif name == 'list_examples': value = []
                     elif name == 'admin_get': value = {'providers': [], 'connections': [], 'defaults': {}, 'server': {}}
                     elif name == 'hardware_get': value = {'host': {'model': 'Raspberry Pi'}, 'devices': []}
+                    elif name == 'power_get': value = {'host': {'available': False, 'cpu': {}}, 'servos': {'max_active_servos': 3, 'per_servo_deg_s': 30, 'total_deg_s': 60, 'settle_ms': 80}, 'armed': controller['system_armed'], 'busy': False}
                     elif name == 'plan_list': value = {'poses': [], 'plans': [], 'execution': {'running': False}}
                     elif name == 'camera_list': value = {'cameras': [], 'primary_camera_id': None}
                     elif name == 'controller_set_enabled':
+                        controller_changes.append(request['params']['arguments']['enabled'])
                         if not controller['fail_set']:
                             controller['enabled'] = request['params']['arguments']['enabled']
+                            if controller['enabled']: controller['system_armed'] = True
                         value = gamepad()
                     else: raise AssertionError('Unexpected tool '+name)
                     result = {'content': [{'type': 'text', 'text': json.dumps(value)}]}
@@ -59,13 +63,20 @@ with sync_playwright() as p:
         assert page.locator('.power-panel').is_hidden()
         assert page.locator('.app-download').count() == 2
         gamepad_toggle = page.locator('#controller-toggle')
-        page.wait_for_function("document.querySelector('#controller-toggle').dataset.state==='on'")
-        assert gamepad_toggle.get_attribute('aria-pressed') == 'true'
-        # Default attachment never sends an enable or arm command from the page.
+        page.wait_for_function("document.querySelector('#controller-toggle').dataset.state==='off'")
+        assert gamepad_toggle.get_attribute('aria-pressed') == 'false'
+        assert 'arm controller and motion' in gamepad_toggle.get_attribute('aria-label')
+        # A saved enabled preference is not current motion permission. Startup
+        # sends no arm request; one deliberate click enables both together.
         assert 'controller_set_enabled' not in calls
         gamepad_toggle.click()
+        page.wait_for_function("document.querySelector('#controller-toggle').dataset.state==='on'")
+        assert controller_changes == [True] and controller['system_armed']
+        assert gamepad_toggle.get_attribute('aria-pressed') == 'true'
+        gamepad_toggle.click()
         page.wait_for_function("document.querySelector('#controller-toggle').dataset.state==='off'")
-        assert not controller['enabled']
+        assert controller_changes == [True, False]
+        assert not controller['enabled'] and controller['system_armed']
         page.reload(wait_until='domcontentloaded')
         page.wait_for_function("document.querySelector('#controller-toggle').dataset.state==='off'")
         # Unplug/replug must preserve the user's disabled choice.
@@ -81,6 +92,23 @@ with sync_playwright() as p:
         page.wait_for_function("document.querySelector('#notice').textContent.includes('Could not save')")
         assert gamepad_toggle.get_attribute('data-state') == 'on'
         controller['fail_set'] = False
+        # A system STOP dims the icon even though input remains enabled. It
+        # never re-arms from polling; another deliberate click suffices.
+        controller['system_armed'] = False
+        page.wait_for_function("document.querySelector('#controller-toggle').dataset.state==='off'")
+        assert controller['enabled'] and gamepad_toggle.get_attribute('aria-pressed') == 'false'
+        before = len(controller_changes)
+        page.wait_for_timeout(400)
+        assert len(controller_changes) == before
+        controller['fail_set'] = True
+        gamepad_toggle.click()
+        page.wait_for_function("document.querySelector('#controller-toggle').getAttribute('aria-busy')==='false'")
+        assert controller_changes[-1] is True and not controller['system_armed']
+        assert gamepad_toggle.get_attribute('data-state') == 'off'
+        controller['fail_set'] = False
+        gamepad_toggle.click()
+        page.wait_for_function("document.querySelector('#controller-toggle').dataset.state==='on'")
+        assert controller_changes[-1] is True and controller['system_armed']
         # Shared settings from another client and telemetry loss are reflected.
         controller['enabled'] = False
         page.wait_for_function("document.querySelector('#controller-toggle').dataset.state==='off'")
@@ -139,6 +167,6 @@ with sync_playwright() as p:
             page.screenshot(path=str(ROOT/f'artifacts/shell-light-{width}.png'),full_page=True)
         assert not errors, errors
         assert not ({'arm','move','set_servo','set_leg','microphone','camera','camera_configure','plan_run'} & set(calls))
-        print(f'Shell passed: {width}px; controller toggle/persistence/hotplug/errors, appearance, navigation; no actuation')
+        print(f'Shell passed: {width}px; one-step controller arming, STOP/re-arm, persistence/hotplug/errors, appearance, navigation; no actuation')
         context.close()
     browser.close()

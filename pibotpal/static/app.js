@@ -214,6 +214,6 @@ try{const {initAdmin}=await import('./admin.js');admin=initAdmin({call,notice,on
 try{const {initPlans}=await import('./plans.js');plans=initPlans({call,notice,getStatus:()=>connected?status:{}});}catch(error){$('plan').textContent=`Plans unavailable: ${error.message}`;}
 try{const {initHardware}=await import('./hardware-admin.js');hardwareAdmin=initHardware({call});}catch(error){console.error('Hardware inventory unavailable',error);}
 try{const {initCameraViews}=await import('./cameras-ui.js');cameraViews=initCameraViews({call,notice,CameraFeed,getStatus:()=>connected?status:{}});}catch(error){console.error('Camera settings unavailable',error);}
-try{const {initControllerToggle}=await import('./controller-toggle.js');controllerToggle=initControllerToggle({call,notice,onChanged:gamepad=>{status.gamepad=gamepad;hardwareAdmin?.refreshControllers();}});}catch(error){console.error('Controller toggle unavailable',error);}
+try{const {initControllerToggle}=await import('./controller-toggle.js');controllerToggle=initControllerToggle({call,notice,onChanged:gamepad=>{status.gamepad=gamepad;if(typeof gamepad.system_armed==='boolean'){status.armed=gamepad.system_armed;if(status.armed)status.estop=false;}updateControls();hardwareAdmin?.refreshControllers();}});}catch(error){console.error('Controller toggle unavailable',error);}
 selectTab(location.hash.slice(1),false);
 setInterval(refresh,500);refresh();loadExamples();setInterval(()=>{$('clock').textContent=new Date().toLocaleTimeString('en-GB');},1000);
