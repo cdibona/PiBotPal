@@ -114,3 +114,38 @@ def test_current_undervoltage_blocks_arm_and_new_fault_stops_motion(client, monk
     state = call(client, 'power_get')['structuredContent']
     assert 'undervoltage' in state['last_motion_stop']['reason']
     assert client.app.state.controller.status()['servo_angles'] == [None] * 12
+
+
+def test_disarm_and_save_validates_first_and_persists_sequence(client, tmp_path, monkeypatch):
+    import json
+    budget = {'max_active_servos': 4, 'per_servo_deg_s': 30, 'total_deg_s': 60,
+              'settle_ms': 80, 'body_sequence': 'joints', 'disarm': True}
+    spoken = []
+    monkeypatch.setattr(client.app.state.media, 'announce', spoken.append)
+    call(client, 'arm', armed=True)
+    assert call(client, 'servo_power_set', **{**budget, 'body_sequence': 'invalid'})['isError']
+    assert call(client, 'servo_power_set', **{**budget, 'max_active_servos': 12})['isError']
+    assert client.app.state.controller.status()['armed']
+    assert not (tmp_path / 'servo-power.json').exists()
+    result = call(client, 'servo_power_set', **budget)['structuredContent']
+    assert not result['armed'] and result['servos']['body_sequence'] == 'joints'
+    assert result['servos']['max_active_servos'] == 4
+    assert json.loads((tmp_path / 'servo-power.json').read_text())['body_sequence'] == 'joints'
+    assert spoken == ['system armed', 'system disarmed']
+    assert client.app.state.controller.status()['servo_angles'] == [None]*12
+
+
+def test_omitted_body_sequence_preserves_saved_choice(client):
+    budget = {'max_active_servos': 3, 'per_servo_deg_s': 30, 'total_deg_s': 60, 'settle_ms': 80}
+    assert call(client, 'servo_power_set', **budget, body_sequence='legs')['structuredContent']['servos']['body_sequence'] == 'legs'
+    assert call(client, 'servo_power_set', **budget)['structuredContent']['servos']['body_sequence'] == 'legs'
+
+
+def test_disarm_and_save_rejects_busy_without_changing_permission(client, monkeypatch):
+    controller = client.app.state.controller
+    call(client, 'arm', armed=True)
+    monkeypatch.setattr(controller, '_busy', True)
+    budget = {'max_active_servos': 4, 'per_servo_deg_s': 30, 'total_deg_s': 60, 'settle_ms': 80}
+    result = call(client, 'servo_power_set', **budget, disarm=True)
+    assert result['isError'] and 'Stop the current movement' in str(result)
+    assert controller.status()['armed'] and controller.servo_budget()['max_active_servos'] == 3

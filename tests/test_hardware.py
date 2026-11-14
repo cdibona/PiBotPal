@@ -15,7 +15,7 @@ def isolated_power_settings(tmp_path, monkeypatch):
     monkeypatch.setenv('PIBOTPAL_DATA', str(tmp_path / 'data'))
 
 
-def wait_idle(controller, timeout=6):
+def wait_idle(controller, timeout=8):
     deadline = time.monotonic() + timeout
     while controller.status()['busy'] and time.monotonic() < deadline:
         time.sleep(.005)

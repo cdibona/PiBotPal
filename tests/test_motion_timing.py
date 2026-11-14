@@ -57,7 +57,7 @@ def test_dense_waypoints_share_group_clock_without_per_sample_dwell(monkeypatch,
     c._angles = [0.]*12; clock.now = 0; trace.clear(); c._last_group = None
     c._move_path([[float(i)]*12 for i in range(11)],35)
     assert clock.now == pytest.approx(sparse_time,abs=.02)
-    assert clock.now < 2.3
+    assert clock.now < 3.1  # Three joint phases, each split 3 + 1 by the budget.
     assert all(b[0]-a[0] >= .01999 for a,b in zip(trace,trace[1:]))
     assert c._angles == pytest.approx([10.]*12)
 

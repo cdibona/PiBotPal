@@ -144,23 +144,27 @@ def create_app(controller=None, media=None):
         """Explicitly enable motion, or disarm and cancel all active work. No motion on arming."""
         lease['last_seen'] = time.monotonic()
         async with motion_gate:
-            was_armed = controller.status()['armed']
-            if armed:
-                ensure_manual()
-                if power_monitor.status()['under_voltage'] is True:
-                    raise ValueError('Pi undervoltage is active; wait for power to recover before arming')
-            if not armed:
-                await invoke(plans.stop)
-                await invoke(examples.stop)
-            result = await invoke(controller.arm, armed)
-            if not armed:
-                await invoke(gamepad.discard_pending_actions)
-            now_armed = controller.status()['armed']
-            if was_armed != now_armed:
-                gamepad_driver.reset()
-                gamepad.drain_input_events()
-                await announce_arming('system', now_armed)
+            result = await arm_locked(armed)
         return result if isinstance(result, dict) else await get_status()
+
+    async def arm_locked(armed):
+        was_armed = controller.status()['armed']
+        if armed:
+            ensure_manual()
+            if power_monitor.status()['under_voltage'] is True:
+                raise ValueError('Pi undervoltage is active; wait for power to recover before arming')
+        else:
+            await invoke(plans.stop)
+            await invoke(examples.stop)
+        result = await invoke(controller.arm, armed)
+        if not armed:
+            await invoke(gamepad.discard_pending_actions)
+        now_armed = controller.status()['armed']
+        if was_armed != now_armed:
+            gamepad_driver.reset()
+            gamepad.drain_input_events()
+            await announce_arming('system', now_armed)
+        return result
 
     async def stop_locked():
         await invoke(plans.stop)
@@ -332,10 +336,19 @@ def create_app(controller=None, media=None):
 
     @mcp.tool()
     async def servo_power_set(max_active_servos: int, per_servo_deg_s: float,
-                              total_deg_s: float, settle_ms: int) -> dict:
-        """Persist servo concurrency/rate/settling limits while disarmed and idle. Does not move servos or measure amperes."""
+                              total_deg_s: float, settle_ms: int, body_sequence: str | None = None,
+                              disarm: bool = False) -> dict:
+        """Persist servo limits and whole-body sequence ('joints': end/shoulder/angle, or 'legs') while idle. Omitted sequence preserves the current choice. disarm=true explicitly disarms before saving; otherwise disarm first. Does not move servos."""
         async with motion_gate:
-            await invoke(controller.set_servo_budget, max_active_servos, per_servo_deg_s, total_deg_s, settle_ms)
+            if disarm:
+                # Reject invalid values before changing motion permission.
+                controller._validate_budget(max_active_servos, per_servo_deg_s, total_deg_s, settle_ms,
+                                            body_sequence=body_sequence if body_sequence is not None else controller.servo_budget()['body_sequence'])
+                if controller.status()['busy']:
+                    raise ValueError('Stop the current movement before saving servo limits')
+                await arm_locked(False)
+            await invoke(controller.set_servo_budget, max_active_servos, per_servo_deg_s, total_deg_s, settle_ms,
+                         body_sequence=body_sequence)
             gamepad_driver.reset()
             gamepad.drain_input_events()
         return await power_get()

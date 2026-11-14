@@ -225,8 +225,8 @@ def test_simulated_controller_executes_saved_pose(tmp_path):
         plan = store.save_plan('Pose', [{'type': 'pose', 'pose_id': pose['id'], 'speed': 80}])
         controller.arm(True)
         store.run(plan['id'])
-        # Include the mandatory one-second settle for all four unknown groups.
-        assert wait(store, timeout=6)['phase'] == 'complete'
+        # Include the mandatory one-second settle for all six capped groups.
+        assert wait(store, timeout=8)['phase'] == 'complete'
         assert controller.status()['servo_angles'] == [0]*12
         assert not controller.status()['armed']
     finally:

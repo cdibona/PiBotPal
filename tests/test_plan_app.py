@@ -78,8 +78,8 @@ def test_saved_pose_and_plan_execute_only_after_manual_arm(client):
     tool(client, 'arm', armed=True)
     result = tool(client, 'plan_run', plan_id=plan['id'])
     assert result['running']
-    # Initial pose establishes four leg groups with a one-second settle each.
-    assert finish(client, timeout=6)['phase'] == 'complete'
+    # Initial pose establishes six capped joint groups with a one-second settle.
+    assert finish(client, timeout=8)['phase'] == 'complete'
     state = tool(client, 'get_status')
     assert state['servo_angles'] == [0]*12 and not state['armed']
 

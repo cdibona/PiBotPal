@@ -56,7 +56,8 @@ class Controller:
         self._battery_timestamp = None
         self._started = time.monotonic()
         self._budget_path = Path(budget_path or Path(os.getenv('PIBOTPAL_DATA', '~/.local/share/pibotpal')).expanduser() / 'servo-power.json')
-        self._budget = {'max_active_servos': 3, 'per_servo_deg_s': 30.0, 'total_deg_s': 60.0, 'settle_ms': 80}
+        self._budget = {'max_active_servos': 3, 'per_servo_deg_s': 30.0, 'total_deg_s': 60.0,
+                        'settle_ms': 80, 'body_sequence': 'joints'}
         self._budget_error = None
         self._budget_phase, self._active_servos = 'idle', []
         self._last_group, self._group_finished = None, None
@@ -204,7 +205,7 @@ class Controller:
             }
 
     @staticmethod
-    def _validate_budget(max_active_servos, per_servo_deg_s, total_deg_s, settle_ms):
+    def _validate_budget(max_active_servos, per_servo_deg_s, total_deg_s, settle_ms, body_sequence='joints'):
         if isinstance(max_active_servos, bool) or not isinstance(max_active_servos, int) or not 1 <= max_active_servos <= 6:
             raise ValueError('max_active_servos must be an integer from 1 to 6')
         if isinstance(settle_ms, bool) or not isinstance(settle_ms, int) or not 40 <= settle_ms <= 500:
@@ -212,8 +213,10 @@ class Controller:
         per_servo_deg_s, total_deg_s = finite(per_servo_deg_s), finite(total_deg_s)
         if not 5 <= per_servo_deg_s <= 60 or not 5 <= total_deg_s <= 180:
             raise ValueError('Servo rate must be 5–60 and total rate 5–180 degrees per second')
+        if body_sequence not in ('joints', 'legs'):
+            raise ValueError('body_sequence must be joints or legs')
         return dict(max_active_servos=max_active_servos, per_servo_deg_s=per_servo_deg_s,
-                    total_deg_s=total_deg_s, settle_ms=settle_ms)
+                    total_deg_s=total_deg_s, settle_ms=settle_ms, body_sequence=body_sequence)
 
     def _read_budget(self):
         try:
@@ -231,9 +234,10 @@ class Controller:
                     'error': self._budget_error, 'units': 'commanded degrees/second',
                     'description': 'Commanded motion budget; no current feedback. Holding servos still draw power. Unknown initial positions cannot be rate limited.'}
 
-    def set_servo_budget(self, max_active_servos, per_servo_deg_s, total_deg_s, settle_ms):
-        values = self._validate_budget(max_active_servos, per_servo_deg_s, total_deg_s, settle_ms)
+    def set_servo_budget(self, max_active_servos, per_servo_deg_s, total_deg_s, settle_ms, body_sequence=None):
         with self._lock:
+            values = self._validate_budget(max_active_servos, per_servo_deg_s, total_deg_s, settle_ms,
+                                          self._budget['body_sequence'] if body_sequence is None else body_sequence)
             if self._armed or self._busy or self._interrupting:
                 raise RuntimeError('Disarm and wait for motion to stop before saving servo budget')
             self._budget_path.parent.mkdir(parents=True, exist_ok=True)
@@ -292,7 +296,14 @@ class Controller:
                 path.extend(self._pose_angles(pose) for pose in poses)
                 if name in ('forward', 'backward', 'turn left', 'turn right', 'turn left angle', 'turn right angle'):
                     self._moves.stand_position = (self._moves.stand_position + 1) & 1
-            self._move_path(path, speed)
+            if name in ('forward', 'backward', 'turn left', 'turn right', 'turn left angle', 'turn right angle'):
+                self._move_path(path, speed)
+            else:
+                # Gesture poses are keyframes: every affected joint reaches a
+                # pose before any joint begins the next pose. Only sampled gait
+                # paths merge adjacent waypoints into continuous trajectories.
+                for target in path:
+                    self._move(target, speed)
         return self._submit(name, perform)
 
     def _pose_angles(self, coords, strict=True):
@@ -411,12 +422,15 @@ class Controller:
         self._move_path([targets], speed)
 
     def _groups(self, indices):
-        # Keep joints on the same leg together. A stricter configured limit
-        # splits a leg; larger limits never force unrelated legs to move.
+        # Whole-body changes can move matching joints across the legs: distal
+        # end/knee joints, then shoulders, then hip angle/yaw. A lower budget
+        # splits each phase without advancing to the next joint type early.
+        # A single-leg swing retains its coordinated foot trajectory.
         limit = self._budget['max_active_servos']
         result = []
-        for leg in range(4):
-            joints = [i for i in indices if i // 3 == leg]
+        by_joint = self._budget['body_sequence'] == 'joints' and len({i // 3 for i in indices}) > 1
+        for index in range(3 if by_joint else 4):
+            joints = [i for i in indices if (i % 3 if by_joint else i // 3) == index]
             result.extend(tuple(joints[n:n+limit]) for n in range(0, len(joints), limit))
         return tuple(result)
 
@@ -439,7 +453,7 @@ class Controller:
         self._last_group, self._group_finished = tuple(group), time.monotonic()
 
     def _move_path(self, targets, speed):
-        """Serialize leg trajectories under a commanded travel budget.
+        """Serialize grouped trajectories under a commanded travel budget.
 
         Progress advances by at most one 20ms quantum per emitted sample.
         Scheduler stalls stretch time, never create catch-up angle jumps.

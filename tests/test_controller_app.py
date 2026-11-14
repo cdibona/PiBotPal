@@ -112,8 +112,8 @@ def test_quick_press_runs_real_simulated_pose_and_release_halts_gait(client):
     arm(client)
     tap(pad, 'South')
     wait_for(lambda: robot.status()['motion_id'] == 1)
-    # Four initially unknown leg groups each receive a one-second settle.
-    wait_for(lambda: not robot.status()['busy'], timeout=6)
+    # Three joint phases split 3+1 at the default cap: six initial settles.
+    wait_for(lambda: not robot.status()['busy'], timeout=8)
     assert all(angle is not None for angle in robot.status()['servo_angles'])
     assert robot.status()['action_error'] is None
     assert robot._hat is None and robot._servos == []
