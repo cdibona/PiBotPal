@@ -47,11 +47,17 @@ Camera frames and audio use separate media URLs for efficient streaming; their c
 ## Motion timing
 
 Joint motion runs at 50 Hz with a shared commanded-motion budget. By default,
-only one leg's group of up to three servos changes at once, with a limit of
+whole-body changes (such as stand and sit) move matching joints across all
+four legs: **end/knee joints → shoulders → hip angle joints**. Each phase is
+split to honor the concurrency limit, which defaults to three servos (3+1
+for each group of four). Set **Servos commanded together** to four if you want
+all four matching joints to change together. The defaults retain a limit of
 30 degrees/second per servo, 60 degrees/second summed across the group, and
 80 ms settling between different groups. Requested speed can lower these rates
 but cannot exceed the budget. Consecutive gait samples for the same group stream
-continuously; body transfers are staggered across legs. Scheduler stalls extend
+continuously; single-leg swings stay coordinated and body transfers use the
+selected sequence. Non-gait gestures complete every whole-body pose before
+starting their next pose. Scheduler stalls extend
 the movement instead of producing catch-up jumps. Unchanged poses return
 immediately. The HAT uses a 50 Hz
 PWM period with one-microsecond pulse resolution (about 0.09 degrees), and
@@ -62,8 +68,13 @@ joints are initialized in separate groups with at least one second of settling
 after each group, including the last. That delay cannot confirm physical arrival
 or rate-limit an unknown initial position.
 
-Change the limits in **Admin → Hardware → Power & motion budget** while disarmed and
-idle. Settings persist in `servo-power.json` (0600) and apply to web, native,
+Change the limits and **Whole-body sequence** in
+**Admin → Hardware → Power & motion budget**. Choose matching joints or the
+previous leg-by-leg order. **Save servo limits** is available while disarmed
+and idle; when armed but idle, **Disarm and save** explicitly disarms first.
+During movement, stop or wait before saving. Invalid values are rejected before
+disarming; saving never moves a servo or re-arms motion. Settings persist in
+`servo-power.json` (0600) and apply to web, native,
 MCP, controller, testing, and plan movements through the shared controller.
 This is a concurrency/travel-rate budget, not a measured amperage or wattage
 limit. Holding servos still consume power; software STOP holds their last PWM
@@ -111,7 +122,11 @@ The dashboard has a dedicated power panel. `get_status.power` reports powered st
 **Admin → Hardware** also shows the Pi CPU ceiling, current frequency,
 temperature, and current/historical undervoltage and throttling flags.
 `power_get` reads this telemetry and the servo budget; `servo_power_set` saves
-the four budget limits while disarmed and idle. Pi firmware flags are sampled
+the four numeric limits and optional `body_sequence` (`joints` or `legs`).
+Omitting the sequence preserves the saved choice. The optional `disarm: true`
+performs the explicit disarm-and-save operation while idle. Existing budget
+files without a sequence use matching joints; their numeric limits are preserved.
+Pi firmware flags are sampled
 once per second. Current undervoltage blocks arming; a detected new undervoltage
 event stops and disarms motion. Historical flags already present at server
 startup are shown separately. This sampled protection cannot prevent every

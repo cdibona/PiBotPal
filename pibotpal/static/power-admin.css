@@ -4,7 +4,7 @@
 .hardware-power-card > .panel-heading h2 { font-size: 18px; }
 .hardware-power-card > .panel-heading p { margin-top: 5px; color: var(--muted); font-size: 13px; line-height: 1.6; }
 .hardware-power-card .outline { font-size: 13px; flex-shrink: 0; }
-.hardware-power-card > .notice { margin: 16px 20px 0; font-size: 13px; }
+.servo-power-form > .notice { margin: 0 0 16px; font-size: 13px; }
 .hardware-power-card.has-power-warning { border-color: var(--danger-border); }
 .hardware-power-telemetry { display: grid; grid-template-columns: 1fr 1fr; padding: 20px; gap: 26px; border-bottom: 1px solid var(--line); }
 .power-host-summary, .power-health-summary { min-width: 0; }
@@ -36,6 +36,10 @@
 .power-input-unit input::-webkit-inner-spin-button, .power-input-unit input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
 .power-input-unit span { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 12px; pointer-events: none; }
 .servo-power-fields small { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.servo-power-sequence { display: grid; grid-template-columns: minmax(200px, 1fr) 2fr; align-items: end; gap: 18px; margin: 0 0 22px; }
+.servo-power-sequence label { display: flex; flex-direction: column; gap: 8px; font-size: 13px; min-width: 0; }
+.servo-power-sequence select { width: 100%; font-size: 14px; padding: 10px 12px; }
+.servo-power-sequence .caption { font-size: 12px; line-height: 1.7; }
 .servo-power-actions { display: flex; align-items: center; gap: 10px 15px; flex-wrap: wrap; }
 .servo-power-actions button, .servo-power-actions .primary { width: auto; margin: 0; font-size: 13px; padding: 9px 13px; }
 .servo-power-actions p { flex: 1 1 260px; color: var(--muted); font-size: 12px; line-height: 1.65; }
@@ -44,7 +48,6 @@
 @media (max-width: 780px) {
   .hardware-power-card > .panel-heading { align-items: flex-start; flex-direction: column; padding: 17px; gap: 14px; }
   .hardware-power-card > .panel-heading h2 { font-size: 17px; }
-  .hardware-power-card > .notice { margin: 16px 17px 0; }
   .hardware-power-telemetry { grid-template-columns: 1fr; gap: 22px; padding: 17px; }
   .power-host-summary { padding: 0 0 20px; border-right: 0; border-bottom: 1px solid var(--line); }
   .power-host-values { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -52,6 +55,7 @@
   .servo-power-form { padding: 17px; }
   .servo-power-title { align-items: flex-start; flex-direction: column; gap: 10px; }
   .servo-power-fields { gap: 18px 15px; }
+  .servo-power-sequence { grid-template-columns: 1fr; gap: 12px; }
   .servo-power-note { padding: 12px; }
 }
 @media (max-width: 420px) { .power-host-values { grid-template-columns: repeat(2, minmax(0, 1fr)); } .servo-power-fields { grid-template-columns: 1fr; } .power-health-table > div { gap: 10px; } }

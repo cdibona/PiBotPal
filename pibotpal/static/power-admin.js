@@ -5,6 +5,8 @@ const limits = {
   total_deg_s: {min: 5, max: 180},
   settle_ms: {min: 40, max: 500, integer: true},
 };
+const settingNames = [...Object.keys(limits), 'body_sequence'];
+const fieldLabels = {max_active_servos: 'Servos commanded together', per_servo_deg_s: 'Speed per servo', total_deg_s: 'Combined servo speed', settle_ms: 'Settle interval'};
 const frequency = value => Number.isFinite(value) ? `${Math.round(value)} MHz` : 'Unavailable';
 
 export function initPowerAdmin({call, root}) {
@@ -13,7 +15,6 @@ export function initPowerAdmin({call, root}) {
   section.setAttribute('aria-labelledby', 'hardware-power-title');
   section.innerHTML = `
     <div class="panel-heading"><div><h2 id="hardware-power-title">Power & motion budget</h2><p>Monitor the Pi’s power state and limit how quickly servo commands change.</p></div><button id="hardware-power-refresh" type="button" class="outline">Refresh power</button></div>
-    <div id="hardware-power-notice" class="notice" role="status" aria-live="polite" hidden></div>
     <div class="hardware-power-telemetry">
       <div class="power-host-summary"><div class="power-host-title"><h3>Raspberry Pi</h3><span id="hardware-power-state" class="tag">CONNECTING</span></div>
         <dl class="power-host-values"><div><dt>CPU frequency</dt><dd id="power-cpu-current">Unavailable</dd></div><div><dt>CPU cap</dt><dd id="power-cpu-max">Unavailable</dd></div><div><dt>CPU minimum</dt><dd id="power-cpu-min">Unavailable</dd></div><div><dt>Governor</dt><dd id="power-cpu-governor">Unavailable</dd></div><div><dt>Temperature</dt><dd id="power-cpu-temperature">Unavailable</dd></div></dl>
@@ -32,13 +33,15 @@ export function initPowerAdmin({call, root}) {
         <label for="servo-power-total">Combined servo speed<div class="power-input-unit"><input id="servo-power-total" name="total_deg_s" type="number" min="5" max="180" step="any" required value="60"><span>°/s</span></div><small>Sum across moving servos · 5–180</small></label>
         <label for="servo-power-settle">Settle interval<div class="power-input-unit"><input id="servo-power-settle" name="settle_ms" type="number" min="40" max="500" step="1" required value="80"><span>ms</span></div><small>Pause between command groups · 40–500</small></label>
       </div>
+      <div class="servo-power-sequence"><label for="servo-power-sequence">Whole-body movement order<select id="servo-power-sequence" name="body_sequence"><option value="joints">Matching joints across all legs</option><option value="legs">One leg at a time</option></select></label><p id="servo-power-sequence-hint" class="caption"></p></div>
+      <div id="hardware-power-notice" class="notice" role="status" aria-live="polite" hidden></div>
       <div class="servo-power-actions"><button id="servo-power-save" type="submit" class="primary" disabled>Save servo limits</button><button id="servo-power-reset" type="button" disabled>Discard changes</button><p id="servo-power-save-hint">Waiting for robot state before changes can be saved.</p></div>
       <p class="servo-power-note">Servos holding their position still draw power. These limits spread out movement commands; they do not switch servo power off or measure current.</p>
     </form>`;
   root.append(section);
   const $ = id => section.querySelector(`#${id}`);
   const form = $('servo-power-form');
-  const fields = new Map([...form.querySelectorAll('input[name]')].map(input => [input.name, input]));
+  const fields = new Map([...form.querySelectorAll('input[name], select[name]')].map(input => [input.name, input]));
   let active = false, loading = false, saving = false, dirty = false;
   let state = null, saved = null, timer = null, generation = 0;
   const visible = () => active && !document.hidden;
@@ -48,27 +51,42 @@ export function initPowerAdmin({call, root}) {
     $('hardware-power-notice').hidden = !text;
   }
   function values() {
-    return Object.fromEntries([...fields].map(([key, input]) => [key, Number(input.value)]));
+    return Object.fromEntries([...fields].map(([key, input]) => [key, key === 'body_sequence' ? input.value : Number(input.value)]));
   }
-  function validValues() {
-    return [...fields].every(([key, input]) => {
+  function validationError() {
+    for (const [key, input] of fields) {
+      if (key === 'body_sequence') {
+        if (!['joints', 'legs'].includes(input.value)) return 'Choose a whole-body movement order.';
+        continue;
+      }
       const value = Number(input.value), range = limits[key];
-      return input.value.trim() !== '' && Number.isFinite(value) && value >= range.min && value <= range.max && (!range.integer || Number.isInteger(value));
-    });
+      if (input.value.trim() === '' || !Number.isFinite(value) || value < range.min || value > range.max || (range.integer && !Number.isInteger(value)))
+        return `${fieldLabels[key]} must be ${range.integer ? 'a whole number ' : ''}from ${range.min} to ${range.max}.`;
+    }
+    return '';
   }
   function sameValues() {
     const current = values();
-    return saved && Object.keys(limits).every(key => current[key] === saved[key]);
+    return saved && settingNames.every(key => current[key] === saved[key]);
   }
   function controls() {
     const known = state && typeof state.armed === 'boolean' && typeof state.busy === 'boolean';
-    const writable = known && !state.armed && !state.busy;
+    const writable = known && !state.busy;
     const needsRepair = Boolean(state?.servos?.error);
-    $('servo-power-save').disabled = saving || (!dirty && !needsRepair) || !writable || !validValues();
+    const invalid = validationError();
+    $('servo-power-save').disabled = saving || (!dirty && !needsRepair) || !writable || Boolean(invalid);
+    $('servo-power-save').textContent = saving ? 'Saving…' : state?.armed ? 'Disarm and save' : 'Save servo limits';
     $('servo-power-reset').disabled = saving || !dirty || !saved;
     $('servo-power-edit-state').textContent = saving ? 'SAVING' : !saved ? 'LOADING' : dirty ? 'UNSAVED CHANGES' : needsRepair ? 'NEEDS ATTENTION' : 'SAVED';
     $('servo-power-edit-state').className = `tag ${dirty || needsRepair ? 'orange' : ''}`;
-    $('servo-power-save-hint').textContent = !known ? 'Robot state is unavailable. Saving is disabled.' : state.armed ? 'Disarm motion before saving servo limits.' : state.busy ? 'Wait for the current movement to finish before saving.' : !validValues() ? 'Enter values within the displayed limits.' : needsRepair ? 'Save these valid values to replace the invalid stored limits.' : dirty ? 'Ready to save. The robot is disarmed and idle.' : 'Changes can be saved while the robot is disarmed and idle.';
+    $('servo-power-save-hint').textContent = !known ? 'Robot state is unavailable. Saving is disabled.' : state.busy ? 'Stop the current movement or wait for it to finish before saving.' : invalid || (!dirty && !needsRepair ? 'Saved. Change a setting to enable saving.' : state.armed ? 'Saving will disarm system motion and controller actions, then apply your changes.' : needsRepair ? 'Save these valid values to replace the invalid stored limits.' : 'Ready to save. The robot is disarmed and idle.');
+    const current = values(), count = current.max_active_servos;
+    const groups = Number.isInteger(count) && count > 0 && count < 4
+      ? ` Each group of four is split into batches of ${count === 3 ? '3 + 1' : count === 2 ? '2 + 2' : '1 + 1 + 1 + 1'} by your servo limit. Set the limit to 4 to move all four matching joints together.`
+      : ' With a servo limit of at least 4, all four matching joints move together.';
+    $('servo-power-sequence-hint').textContent = current.body_sequence === 'joints'
+      ? `End joints (knees) → shoulder joints → angle joints (hips).${groups} Walking keeps its single-leg swing order.`
+      : 'Complete one leg’s movement before the next. Your concurrency and speed limits still apply.';
   }
   function markFlag(id, value, historical = false) {
     const element = $(id);
@@ -105,7 +123,7 @@ export function initPowerAdmin({call, root}) {
     $('servo-power-error').textContent = settings?.error ? `Saved servo limits need attention: ${settings.error}. Save valid limits before arming.` : '';
     $('servo-power-error').hidden = !settings?.error;
     if (settings && Object.keys(limits).every(key => Number.isFinite(settings[key]))) {
-      saved = Object.fromEntries(Object.keys(limits).map(key => [key, settings[key]]));
+      saved = {...Object.fromEntries(Object.keys(limits).map(key => [key, settings[key]])), body_sequence: settings.body_sequence || 'joints'};
       if (applySettings || !dirty) {
         for (const [key, input] of fields) input.value = saved[key];
         dirty = false;
@@ -142,17 +160,19 @@ export function initPowerAdmin({call, root}) {
   }
   function changed() { dirty = !sameValues(); controls(); }
   form.addEventListener('input', changed);
+  form.addEventListener('change', changed);
   form.addEventListener('submit', async event => {
     event.preventDefault();
     controls();
     if ($('servo-power-save').disabled) return;
     const submitted = values();
+    const disarm = state.armed;
     saving = true; controls(); message('');
     // Discard any older read already in flight; it cannot replace this save result.
     generation++;
     try {
-      const next = await call('servo_power_set', submitted);
-      const editedDuringSave = Object.keys(limits).some(key => values()[key] !== submitted[key]);
+      const next = await call('servo_power_set', {...submitted, ...(disarm ? {disarm: true} : {})});
+      const editedDuringSave = settingNames.some(key => values()[key] !== submitted[key]);
       render(next, !editedDuringSave);
       message(editedDuringSave ? 'Servo limits saved. Your newer edits have not been saved.' : 'Servo command limits saved.');
     } catch (error) {
