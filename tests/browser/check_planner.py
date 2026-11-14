@@ -196,6 +196,11 @@ with tempfile.TemporaryDirectory(prefix='pibotpal-planner-browser-') as director
         page.locator('#plan-editor button[type="submit"]').click()
         expect(page.locator('#plan-notice')).to_contain_text('Plan saved')
         assert plans[-1]['steps'] == [{'type': 'action', 'name': 'my greeting', 'steps': 2, 'speed': 50}, {'type': 'wait', 'seconds': 2.5}]
+        # Saving refreshes the action library while its panel is hidden. On
+        # returning, the preview must use its actual visible width again.
+        page.locator('#planner-actions-tab').click()
+        expect(page.locator('#action-pose-preview')).to_have_attribute('viewBox', '0 0 680 190' if width == 1440 else '0 0 340 380')
+        page.locator('#planner-routines-tab').click()
         expect(page.locator('#plan-run')).to_be_disabled()
         sync(armed=True)
         page.locator('#plan-run').click()

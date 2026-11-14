@@ -227,7 +227,7 @@ export function initActionsEditor({root, call, getStatus, onChanged, onAddToPlan
   $('action-add-to-plan').addEventListener('click', () => { if (selectedName && !dirty) onAddToPlan?.(selectedName); });
   $('action-reset').addEventListener('click', async () => { controls(); if ($('action-reset').disabled) return; saving = true; controls(); try { await publish(await call('action_reset', {name: selectedName, ...(getStatus()?.armed ? {disarm: true} : {})})); message('Built-in action restored.'); } catch (error) { message(error.message, 'error'); } finally { saving = false; controls(); } });
   $('action-delete').addEventListener('click', async () => { controls(); if ($('action-delete').disabled) return; saving = true; controls(); try { await call('action_delete', {name: selectedName}); actions = actions.filter(a => a.name !== selectedName); setDraft(actions.find(a => a.name === 'stand') || actions[0] || null); await onChanged?.(copy(actions)); message('Custom action deleted.'); } catch (error) { message(error.message, 'error'); } finally { saving = false; controls(); } });
-  new ResizeObserver(entries => { const width = Math.round(entries[0].contentRect.width); if (width && width !== previewWidth) { previewWidth = width; if (previewAngles) drawPose(previewAngles); } }).observe($('action-pose-preview'));
+  new ResizeObserver(entries => { const width = Math.round(entries[0].contentRect.width); if (width !== previewWidth) { previewWidth = width; if (width && previewAngles) drawPose(previewAngles); } }).observe($('action-pose-preview'));
   setDraft(null);
   return {
     setLibrary(next, limits = {}) {

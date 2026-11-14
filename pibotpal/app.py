@@ -214,9 +214,17 @@ def create_app(controller=None, media=None):
         return result if isinstance(result, dict) else await get_status()
 
     @mcp.tool()
-    async def action_list() -> dict:
-        """Read shared editable actions and their servo keyframes. These definitions drive dashboard, controller, plans, tests, and MCP."""
-        return await invoke(controller.actions.catalog)
+    async def action_list(name: str | None = None, include_frames: bool = False) -> dict:
+        """Discover shared action names and frame counts, including custom actions. Pass name and include_frames=true to inspect an action's servo keyframes. Definitions drive dashboard, controller, plans, tests, and MCP."""
+        catalog = await invoke(controller.actions.catalog)
+        if name is not None:
+            catalog['actions'] = [await invoke(controller.actions.get, name)]
+        if not include_frames:
+            # Keep discovery compact enough for small models and the tool-result
+            # size limit, even when the custom action library is full.
+            catalog['actions'] = [{'name': action['name'], 'frame_count': len(action['frames'])}
+                                  for action in catalog['actions']]
+        return catalog
 
     async def action_edit_locked(disarm):
         state = controller.status()

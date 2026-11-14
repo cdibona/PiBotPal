@@ -80,8 +80,10 @@ with sync_playwright() as p:
         assert page.locator('#hardware-devices').get_by_text('USB gamepad',exact=True).count()==0
         page.get_by_role('tab',name='Controllers',exact=True).click()
         page.wait_for_function("document.querySelector('#controller-status').textContent==='RECEIVER CONNECTED'")
-        assert page.locator('#controller-axes output').first.inner_text()=='0.50'
-        assert page.locator('#controller-buttons .is-held').count()==1
+        # The mocked SSE endpoint closes, briefly clearing input before the
+        # polling fallback renders its next sample.
+        expect(page.locator('#controller-axes output').first).to_have_text('0.50')
+        expect(page.locator('#controller-buttons .is-held')).to_have_count(1)
         assert page.locator('#hardware-devices').is_hidden()
         page.get_by_role('tab',name='Models',exact=True).click()
         page.wait_for_timeout(100)

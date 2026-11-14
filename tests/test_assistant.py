@@ -24,7 +24,7 @@ def setup(tmp_path, tools=None):
     settings.save_defaults({'test_provider_id':provider['id'],'assistant_provider_id':provider['id'],
                             'robot_tools':tools or ['get_status','list_examples']})
     catalog=[types.Tool(name=name,description=name,inputSchema={'type':'object'}) for name in
-             ['get_status','list_examples','move','stop','set_leg','set_servo','speak','arm','camera','admin_get','admin_save_provider']]
+             ['get_status','list_examples','action_list','move','stop','set_leg','set_servo','speak','arm','camera','admin_get','admin_save_provider']]
     async def listing(): return catalog
     calls=[]
     async def invoke(name,args):
@@ -66,6 +66,21 @@ def test_tool_declarations_exclude_arm_admin_and_unselected_tools(tmp_path,monke
     async def scenario():
         job=await finish(assistant,assistant.start('What tools?',use_tools=True))
         assert job['status']=='complete' and calls==[]
+    run(scenario())
+
+
+def test_action_catalog_can_be_enabled_without_movement_tools(tmp_path, monkeypatch):
+    assistant, _, _, calls = setup(tmp_path, tools=['action_list'])
+    async def complete(provider, messages, tools, options):
+        assert {tool['function']['name'] for tool in tools} == {'robot_action_list'}
+        if not calls:
+            return response(calls=[call('robot_action_list')])
+        return response('Shared actions available')
+    monkeypatch.setattr(integrations, 'complete', complete)
+    async def scenario():
+        job = await finish(assistant, assistant.start('Read available actions', use_tools=True))
+        assert job['status'] == 'complete'
+        assert calls == [('action_list', {})]
     run(scenario())
 
 

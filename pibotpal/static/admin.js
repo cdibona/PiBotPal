@@ -2,6 +2,7 @@ const $ = id => document.getElementById(id);
 const ROBOT_TOOLS = [
   ['get_status', 'Read robot status', 'Telemetry only'],
   ['list_examples', 'List testing examples', 'Catalog only'],
+  ['action_list', 'Read shared actions and keyframes', 'Catalog only; includes custom actions'],
   ['move', 'Run a movement', 'Requires manual arming'],
   ['stop', 'Stop the robot', 'Disarms and mutes audio'],
   ['set_leg', 'Place a foot', 'Requires manual arming'],

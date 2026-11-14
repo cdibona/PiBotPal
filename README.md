@@ -215,12 +215,17 @@ movement or arms the robot.
 
 MCP adds `plan_list`, `pose_save`, `pose_delete`, `plan_save`, `plan_delete`,
 `plan_draft`, `plan_run`, `plan_stop`, `hardware_get`, and `hardware_save`.
-`action_list` returns shared definitions and limits; `action_save(name, frames,
+`action_list` returns compact action names, frame counts, and limits; use
+`action_list(name="wave", include_frames=true)` to inspect its full definition
+or omit `name` for all definitions. `action_save(name, frames,
 description, playback, disarm)`, `action_reset(name, disarm)`, and
 `action_delete(name)` manage them. Each frame is `{angles: [12 numbers],
 speed_deg_s: number, hold_seconds: number}`. `plan_list` includes the same action
 catalog for native clients. `get_status.keyframes` reports the executing action,
 revision, frame or continuous frame range, cycle, and phase.
+Admin's model tool permissions include **Read shared actions and keyframes**
+(`action_list`) so a configured assistant can discover custom actions without
+receiving movement or editing permission. Existing model permissions are preserved.
 Sensor conditions/branching are not implemented in this version; plans do not
 provide automatic obstacle avoidance. Unsupported conditional instructions are
 rejected by the simple parser rather than silently dropped.

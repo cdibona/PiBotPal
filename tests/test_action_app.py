@@ -11,7 +11,7 @@ def frame(angles=None, speed=24, hold=0):
 
 
 def test_action_catalog_and_new_action_are_available_in_planner_without_moving(client, tmp_path):
-    catalog = call(client, 'action_list')['value']
+    catalog = call(client, 'action_list', include_frames=True)['value']
     assert {'stand', 'sit', 'wave', 'forward'} <= {a['name'] for a in catalog['actions']}
     assert all(a['frames'] and a['builtin'] for a in catalog['actions'])
     saved = call(client, 'action_save', name='greeting', frames=[frame()])['value']
@@ -24,6 +24,16 @@ def test_action_catalog_and_new_action_are_available_in_planner_without_moving(c
     assert any(a['name'] == 'greeting' for a in json.loads(path.read_text())['actions'])
     state = client.app.state.controller.status()
     assert not state['armed'] and state['servo_angles'] == [None]*12 and state['motion_id'] == 0
+
+
+def test_action_discovery_is_compact_and_detailed_frames_are_available_by_name(client):
+    call(client, 'action_save', name='greeting', frames=[frame(), frame(speed=12)])
+    summary = call(client, 'action_list')['value']
+    assert all(set(action) == {'name', 'frame_count'} for action in summary['actions'])
+    assert {'name': 'greeting', 'frame_count': 2} in summary['actions']
+    detail = call(client, 'action_list', name='greeting', include_frames=True)['value']
+    assert len(detail['actions']) == 1 and detail['actions'][0]['frames'][1]['speed_deg_s'] == 12
+    assert call(client, 'action_list', name='absent')['isError']
 
 
 def test_edited_builtin_is_used_by_move_controller_routine_and_testing(client, monkeypatch):
