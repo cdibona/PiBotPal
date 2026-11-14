@@ -56,6 +56,7 @@ with sync_playwright() as p:
                            'camera':{'enabled':True,'available':True},'microphone':{'enabled':False},
                            'speaker':{},'recordings':[],'plan':{'running':False,'phase':'idle'},'examples':{}}
                 elif name=='list_examples':value=[]
+                elif name == 'action_list': value = {'actions': [], 'limits': {}}
                 elif name=='plan_list':value={'poses':[],'plans':[],'execution':{'running':False}}
                 elif name=='admin_get':value={'providers':[],'connections':[],'defaults':{}}
                 else:raise AssertionError('Unexpected hardware/tool call: '+str(name))

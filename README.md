@@ -158,18 +158,46 @@ API references: [Ollama chat](https://docs.ollama.com/api/chat), [Ollama model d
 
 Current PiBotPal code, including the replacement HAT driver, geometry, motion planner, and Testing tab, is **MIT licensed**; see `LICENSE`. SunFounder's original examples retain their own licenses and remain separate. Historical versions are not relicensed. Three.js retains its MIT notice. System libcamera and ALSA libraries are LGPL-2.1-or-later; this is not a claim that the operating system or every dependency is MIT. See [dependency inventory](DEPENDENCIES.md) and `NOTICE`.
 
-## Plan: saved poses and routines
+## Plan: shared keyframe actions and routines
 
-The web **Plan** tab and the Android/Windows **Plan** tabs share the same MCP
-library and runner. Save a named pose from twelve known, idle servo commands;
-these are commanded positions, not measurements of hand-positioned legs.
-Build, reorder, and edit movement, saved-pose, and wait steps. The native editors
-also expose the step JSON for direct editing. Saved plans snapshot pose angles,
-so later library edits/deletions do not silently change an existing plan.
+The web **Plan** tab has **Actions & keyframes** and **Routines** sections.
+Stand, Sit, Wave, all other built-in motions, and custom actions use one editable
+library. Dashboard buttons, USB controller mappings, MCP `move`, routine steps,
+Testing actions, and Android/Windows controls execute these saved definitions.
+Editing Stand, for example, changes Stand everywhere. A running action takes a
+snapshot of its definition; edits require idle, disarmed motion, with an explicit
+**Disarm and save action** option when armed. Saving never moves a servo.
+
+Choose **New keyframe action** to create an action, or **Save as new action** to
+copy an existing one. Each timeline frame contains twelve logical servo angles,
+a transition speed into that frame in degrees per second, and an optional hold
+after arrival. Add, duplicate, reorder, or remove frames, enter joint targets,
+or capture the current complete, idle commanded pose. The browser preview and
+scrubber do not send motion commands. Positions are commands, not measurements
+of hand-positioned legs. Built-in actions can be restored to their defaults.
+
+**Complete each keyframe** finishes all affected joints before starting the next
+frame, using Admin's joint/leg grouping and power budget. **Continuous sampled
+path** preserves smooth gait trajectories across adjacent frames with the same
+rate; rate changes and holds create boundaries. Gait cycles repeat the visible
+saved sequence. Frame rates are 1–144°/s and holds 0–30 seconds; an action can
+contain 128 frames and run for at most 300 seconds. The caller's existing speed
+setting caps the rate at `speed * 1.8`°/s; the planner's Run action uses 80 so the
+frame rates govern. Per-servo and total power budgets can slow execution further.
+The browser preview illustrates poses and frame timing, without simulating the
+power scheduler or unknown startup positions.
+
+Under **Routines**, choose **New plan**, name it, and add shared actions, saved
+poses, or waits. Reorder and edit steps, save, then arm and run explicitly.
+Android and Windows also create routines, offer the shared action list, expose
+step JSON, and link to the web keyframe editor. Saved plans snapshot pose angles,
+while action steps intentionally reference the latest shared action definition.
+Custom actions referenced by saved routines or controller mappings cannot be
+deleted until those references are removed.
 
 Describe a routine such as “Stand. Move forward 4 steps, turn left, move forward
 four steps.” The built-in parser handles this without an LLM. Optional **Use
-configured LLM** sends instructions and up to 32 saved pose names/IDs to the Admin assistant provider and receives a
+configured LLM** sends instructions, available action names, and up to 32 saved pose names/IDs to the Admin assistant provider and receives a
 strictly validated draft without tool access. Review and save the draft, then
 explicitly arm and run. Drafting and saving never move the robot. The model does
 not arm or run its draft. Gait cycles do not imply calibrated meters or degrees.
@@ -181,9 +209,18 @@ applies. Plans disarm on completion, cancellation, timeout, or error; STOP,
 disarming, service shutdown, and the heartbeat watchdog cancel the plan. Manual
 motion/tests cannot compete with an active plan. Restarting never resumes one.
 Plans and poses persist locally in `plans.json` under the service data directory.
+Custom actions and built-in overrides persist atomically in private `actions.json`
+with revision numbers; both files survive service restarts. Restart never resumes
+movement or arms the robot.
 
 MCP adds `plan_list`, `pose_save`, `pose_delete`, `plan_save`, `plan_delete`,
 `plan_draft`, `plan_run`, `plan_stop`, `hardware_get`, and `hardware_save`.
+`action_list` returns shared definitions and limits; `action_save(name, frames,
+description, playback, disarm)`, `action_reset(name, disarm)`, and
+`action_delete(name)` manage them. Each frame is `{angles: [12 numbers],
+speed_deg_s: number, hold_seconds: number}`. `plan_list` includes the same action
+catalog for native clients. `get_status.keyframes` reports the executing action,
+revision, frame or continuous frame range, cycle, and phase.
 Sensor conditions/branching are not implemented in this version; plans do not
 provide automatic obstacle avoidance. Unsupported conditional instructions are
 rejected by the simple parser rather than silently dropped.

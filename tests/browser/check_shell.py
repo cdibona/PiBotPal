@@ -34,6 +34,7 @@ with sync_playwright() as p:
                     if name == 'get_status':
                         value = {'server_instance_id': 'mock', 'armed': controller['system_armed'], 'busy': False, 'servo_angles': [None]*12, 'ultrasonic': {'valid': False}, 'camera': {'enabled': False}, 'cameras': [], 'microphone': {'enabled': False}, 'speaker': {}, 'recordings': [], 'plan': {'running': False}, 'examples': {}, 'gamepad': gamepad()}
                     elif name == 'list_examples': value = []
+                    elif name == 'action_list': value = {'actions': [], 'limits': {}}
                     elif name == 'admin_get': value = {'providers': [], 'connections': [], 'defaults': {}, 'server': {}}
                     elif name == 'hardware_get': value = {'host': {'model': 'Raspberry Pi'}, 'devices': []}
                     elif name == 'power_get': value = {'host': {'available': False, 'cpu': {}}, 'servos': {'max_active_servos': 3, 'per_servo_deg_s': 30, 'total_deg_s': 60, 'settle_ms': 80}, 'armed': controller['system_armed'], 'busy': False}

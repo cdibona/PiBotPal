@@ -37,6 +37,7 @@ with sync_playwright() as p:
      name=request.get('params',{}).get('name');args=request.get('params',{}).get('arguments',{});calls.append((name,args))
      if name=='get_status':value={'armed':False,'busy':False,'estop':False,'servo_angles':[None]*12,'ultrasonic':{'valid':False},'camera':{'enabled':False},'microphone':{'enabled':False},'speaker':{},'recordings':[],'examples':{},'gamepad':state['controller']}
      elif name=='list_examples':value=[]
+     elif name == 'action_list': value = {'actions': [], 'limits': {}}
      elif name=='admin_get':value={'providers':[],'connections':[],'defaults':{},'server':{}}
      elif name=='controller_get':value=state['controller']
      elif name=='controller_save_mapping':state['controller']['mapping'].update(args);value=state['controller']

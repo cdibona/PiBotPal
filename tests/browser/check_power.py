@@ -56,6 +56,7 @@ with sync_playwright() as p:
                 elif name == 'get_status':
                     result = {'server_instance_id': 'mock', 'armed': state['armed'], 'busy': state['busy'], 'servo_angles': [None]*12, 'ultrasonic': {'valid': False}, 'camera': {'enabled': False}, 'cameras': [], 'microphone': {'enabled': False}, 'speaker': {}, 'recordings': [], 'plan': {'running': False}, 'examples': {}, 'gamepad': {'enabled': True, 'armed': False, 'attached': False, 'connected': False}}
                 elif name == 'list_examples': result = []
+                elif name == 'action_list': result = {'actions': [], 'limits': {}}
                 elif name == 'admin_get': result = {'providers': [], 'connections': [], 'defaults': {}, 'server': {}}
                 elif name == 'hardware_get': result = {'host': {'model': 'Raspberry Pi'}, 'devices': []}
                 elif name == 'plan_list': result = {'poses': [], 'plans': [], 'execution': {'running': False}}
@@ -181,7 +182,7 @@ with sync_playwright() as p:
         expect(page.locator('#hardware-power-state')).to_have_text('POWER WARNING')
         assert sum(r['name'] == 'power_get' for r in requests) > count
         assert not errors, errors
-        assert {r['name'] for r in requests} <= {'power_get', 'servo_power_set', 'get_status', 'list_examples', 'admin_get', 'hardware_get', 'plan_list', 'camera_list'}
+        assert {r['name'] for r in requests} <= {'power_get', 'servo_power_set', 'get_status', 'list_examples', 'admin_get', 'hardware_get', 'plan_list', 'camera_list', 'action_list'}
         print(f'Power admin browser checks passed: {fixture}, {width}px, dark/light, no actuation calls')
         page.close()
     browser.close()

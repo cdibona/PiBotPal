@@ -4,6 +4,26 @@ const names=['Right front','Left front','Left rear','Right rear'];
 const jointNames=['Knee','Shoulder','Hip'];
 const limits=[[-90,90],[-10,90],[-60,60]];
 let pending=0, lastServerInstance=null, controllerToggle=null;
+let actionPicker=null, actionRun=null;
+
+async function loadActions(){
+  if(!actionPicker){
+    const root=document.querySelector('.drive-options');if(!root)return;
+    const label=document.createElement('label');label.textContent='Shared action library';label.htmlFor='dashboard-action';
+    actionPicker=document.createElement('select');actionPicker.id='dashboard-action';actionPicker.style.maxWidth='100%';
+    actionRun=document.createElement('button');actionRun.type='button';actionRun.textContent='Run selected action';actionRun.className='motion-control';
+    actionRun.addEventListener('click',()=>{if(actionPicker.value)command('move',{name:actionPicker.value,speed:Number($('speed').value),steps:1}).catch(()=>{});});
+    const link=document.createElement('a');link.href='#plan';link.textContent='Edit keyframes and create actions in Plan';link.className='caption';
+    root.append(label,actionPicker,actionRun,link);actionPicker.addEventListener('change',updateControls);
+  }
+  try{
+    const library=await call('action_list'),previous=actionPicker.value;actionPicker.replaceChildren();
+    for(const action of library.actions||[]){const option=document.createElement('option');option.value=action.name;option.textContent=action.name;actionPicker.append(option);}
+    if([...actionPicker.options].some(option=>option.value===previous))actionPicker.value=previous;
+    actionPicker.disabled=!actionPicker.options.length;
+  }catch(error){console.error('Action library unavailable',error);}
+  updateControls();hardwareAdmin?.refreshControllers();
+}
 
 // A live stream owns its connection and retries EOF/errors independently of telemetry.
 // This also catches short restarts that happen between successful status polls.
@@ -107,9 +127,9 @@ function notice(message,type=''){const n=$('notice');n.textContent=message;n.cla
 function log(message){const output=$('test-output');if(output.textContent==='Select an experiment to begin.')output.textContent='';output.textContent=`[${new Date().toLocaleTimeString()}] ${typeof message==='string'?message:JSON.stringify(message,null,2)}\n\n${output.textContent}`.slice(0,30000);}
 async function command(name,args={},message){pending++;updateControls();try{const result=await call(name,args);if(message)notice(message);await refresh();return result;}catch(error){notice(error.message,'error');throw error;}finally{pending--;updateControls();}}
 function motionAllowed(){return connected&&status.armed&&!status.busy&&!status.estop&&!status.plan?.running&&!pending;}
-function updateControls(){document.querySelectorAll('[data-move],.motion-control,.joint-slider').forEach(button=>button.disabled=!motionAllowed());$('arm').disabled=!connected||pending>0;$('arm').textContent=status.armed?'Disarm motion':'Arm motion';$('arm').classList.toggle('armed',Boolean(status.armed));$('arm').title=status.estop?'Reset stop and arm motion':status.armed?'Disarm motion':'Arm motion';$('motion-tag').textContent=status.estop?'STOPPED':status.busy?'MOVING':status.armed?'ARMED':'DISARMED';$('motion-tag').className=`tag ${status.estop?'red':status.armed?'teal':''}`;controllerToggle?.update(status.gamepad,connected);}
+function updateControls(){document.querySelectorAll('[data-move],.motion-control,.joint-slider').forEach(button=>button.disabled=!motionAllowed());if(actionRun)actionRun.disabled=!motionAllowed()||!actionPicker?.value;$('arm').disabled=!connected||pending>0;$('arm').textContent=status.armed?'Disarm motion':'Arm motion';$('arm').classList.toggle('armed',Boolean(status.armed));$('arm').title=status.estop?'Reset stop and arm motion':status.armed?'Disarm motion':'Arm motion';$('motion-tag').textContent=status.estop?'STOPPED':status.busy?'MOVING':status.armed?'ARMED':'DISARMED';$('motion-tag').className=`tag ${status.estop?'red':status.armed?'teal':''}`;controllerToggle?.update(status.gamepad,connected);}
 function render(state){
-  if(state.server_instance_id&&lastServerInstance&&state.server_instance_id!==lastServerInstance)initialized=false;
+  if(state.server_instance_id&&lastServerInstance&&state.server_instance_id!==lastServerInstance){initialized=false;loadActions();}
   if(state.server_instance_id)lastServerInstance=state.server_instance_id;
   status=state;const angles=state.servo_angles||[];
   const power=state.power||{powered:true,voltage:state.battery_voltage,valid:Number.isFinite(state.battery_voltage)},powerValid=power.valid!==false&&Number.isFinite(power.voltage);
@@ -177,9 +197,9 @@ function selectTab(name, updateHash = true) {
   if (!['dashboard','plan','testing','admin','apps'].includes(name)) name = 'dashboard';
   document.querySelectorAll('[data-tab]').forEach(tab=>{const active=tab.dataset.tab===name;tab.classList.toggle('active',active);if(active)tab.setAttribute('aria-current','page');else tab.removeAttribute('aria-current');});
   document.querySelectorAll('.tab-panel').forEach(panel=>panel.hidden=panel.id!==name);
-  document.querySelectorAll('.power-panel,.metrics').forEach(panel=>panel.hidden=['admin','apps'].includes(name));
+  document.querySelectorAll('.power-panel,.metrics').forEach(panel=>panel.hidden=['admin','apps','plan'].includes(name));
   document.body.classList.toggle('admin-active',name==='admin');
-  const titles={plan:['Motion plans','Save poses, arrange steps, and review routines before running.'],dashboard:['Robot dashboard','Live cameras, sensors, and motion controls.'],testing:['Testing lab','Explore the crawler’s capabilities with hardware experiments.'],admin:['Administration','Configure the robot and its connected devices and services.'],apps:['Apps','Take the robot controls with you on Android and Windows.']};
+  const titles={plan:['Motion plans','Edit shared servo keyframes, create actions, and build new routines.'],dashboard:['Robot dashboard','Live cameras, sensors, and motion controls.'],testing:['Testing lab','Explore the crawler’s capabilities with hardware experiments.'],admin:['Administration','Configure the robot and its connected devices and services.'],apps:['Apps','Take the robot controls with you on Android and Windows.']};
   $('page-title').textContent=titles[name][0];$('page-description').textContent=titles[name][1];
   if(name==='testing')loadExamples();
   if(name==='admin'){admin?.selectSection(sectionName||admin?.section||'hardware',false);admin?.refresh();}
@@ -211,9 +231,9 @@ function stopOnLeave(){ $('microphone-player').pause();if(!initialized||!(status
 window.addEventListener('pagehide',stopOnLeave);document.addEventListener('visibilitychange',()=>{if(document.hidden)stopOnLeave();else refresh();});
 try{const {RobotView}=await import('./robot-view.js');model=new RobotView($('robot-view'));}catch(error){$('model-error').textContent=`3D rendering unavailable: ${error.message}`;$('model-error').hidden=false;}
 try{const {initAdmin}=await import('./admin.js');admin=initAdmin({call,notice,onConfigChanged:loadExamples,onSectionChange:name=>{hardwareAdmin?.setActive(!$('admin').hidden?name:null);cameraViews?.setActive(name==='cameras'&&!$('admin').hidden);}});}catch(error){$('admin').textContent=`Admin unavailable: ${error.message}`;}
-try{const {initPlans}=await import('./plans.js');plans=initPlans({call,notice,getStatus:()=>connected?status:{}});}catch(error){$('plan').textContent=`Plans unavailable: ${error.message}`;}
+try{const {initPlans}=await import('./plans.js');plans=initPlans({call,notice,getStatus:()=>connected?status:{},onActionsChanged:loadActions});}catch(error){$('plan').textContent=`Plans unavailable: ${error.message}`;}
 try{const {initHardware}=await import('./hardware-admin.js');hardwareAdmin=initHardware({call});}catch(error){console.error('Hardware inventory unavailable',error);}
 try{const {initCameraViews}=await import('./cameras-ui.js');cameraViews=initCameraViews({call,notice,CameraFeed,getStatus:()=>connected?status:{}});}catch(error){console.error('Camera settings unavailable',error);}
 try{const {initControllerToggle}=await import('./controller-toggle.js');controllerToggle=initControllerToggle({call,notice,onChanged:gamepad=>{status.gamepad=gamepad;if(typeof gamepad.system_armed==='boolean'){status.armed=gamepad.system_armed;if(status.armed)status.estop=false;}updateControls();hardwareAdmin?.refreshControllers();}});}catch(error){console.error('Controller toggle unavailable',error);}
 selectTab(location.hash.slice(1),false);
-setInterval(refresh,500);refresh();loadExamples();setInterval(()=>{$('clock').textContent=new Date().toLocaleTimeString('en-GB');},1000);
+setInterval(refresh,500);refresh();loadExamples();loadActions();setInterval(()=>{$('clock').textContent=new Date().toLocaleTimeString('en-GB');},1000);

@@ -31,6 +31,7 @@ with sync_playwright() as p:
                     name=request.get('params',{}).get('name');args=request.get('params',{}).get('arguments',{});calls.append((name,args))
                     if name=='get_status':value={'server_instance_id':'mock','armed':False,'busy':False,'estop':False,'servo_angles':[None]*12,'ultrasonic':{'valid':False},'camera':next(c for c in cameras if c['id']==state['primary']),'microphone':{'enabled':False},'speaker':{},'recordings':[],'plan':{'running':False},'examples':{},**catalog()}
                     elif name=='list_examples':value=[]
+                    elif name == 'action_list': value = {'actions': [], 'limits': {}}
                     elif name=='plan_list':value={'poses':[],'plans':[],'execution':{'running':False}}
                     elif name=='admin_get':value={'providers':[provider],'connections':[],'defaults':defaults,'server':{}}
                     elif name=='admin_save_provider':state['provider_saved']=args['provider'];value=provider
