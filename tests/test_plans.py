@@ -36,8 +36,8 @@ def store(tmp_path):
     return PlanStore(tmp_path, FakeController())
 
 
-def wait(store):
-    deadline = time.monotonic() + 3
+def wait(store, timeout=3):
+    deadline = time.monotonic() + timeout
     while store.status()['running'] and time.monotonic() < deadline:
         time.sleep(.005)
     assert not store.status()['running']
@@ -217,7 +217,7 @@ def test_run_revalidates_snapshot_against_new_calibration(store):
 
 
 def test_simulated_controller_executes_saved_pose(tmp_path):
-    controller = Controller(simulate=True, config_path=tmp_path/'calibration')
+    controller = Controller(simulate=True, config_path=tmp_path/'calibration', budget_path=tmp_path/'servo-power.json')
     store = PlanStore(tmp_path, controller)
     controller.start()
     try:
@@ -225,7 +225,8 @@ def test_simulated_controller_executes_saved_pose(tmp_path):
         plan = store.save_plan('Pose', [{'type': 'pose', 'pose_id': pose['id'], 'speed': 80}])
         controller.arm(True)
         store.run(plan['id'])
-        assert wait(store)['phase'] == 'complete'
+        # Include the mandatory one-second settle for all four unknown groups.
+        assert wait(store, timeout=6)['phase'] == 'complete'
         assert controller.status()['servo_angles'] == [0]*12
         assert not controller.status()['armed']
     finally:

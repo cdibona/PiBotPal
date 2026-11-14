@@ -9,7 +9,13 @@ from pibotpal.motion import MotionPlan
 from pibotpal.kinematics import A, B, C, DIRECTIONS, inverse, leg_geometry, local_joints
 
 
-def wait_idle(controller, timeout=3):
+@pytest.fixture(autouse=True)
+def isolated_power_settings(tmp_path, monkeypatch):
+    # User changes to the live robot's budget must not change fake-device tests.
+    monkeypatch.setenv('PIBOTPAL_DATA', str(tmp_path / 'data'))
+
+
+def wait_idle(controller, timeout=6):
     deadline = time.monotonic() + timeout
     while controller.status()['busy'] and time.monotonic() < deadline:
         time.sleep(.005)

@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import ast
 import fcntl
+import json
+import tempfile
 import math
 import os
 from pathlib import Path
@@ -28,7 +30,7 @@ class MotionCancelled(Exception):
 
 
 class Controller:
-    def __init__(self, simulate=None, *, servo_factory=None, sonar_factory=None, config_path=None, moves_factory=None):
+    def __init__(self, simulate=None, *, servo_factory=None, sonar_factory=None, config_path=None, moves_factory=None, budget_path=None):
         self.simulate = os.getenv('PIBOTPAL_SIMULATE', '0') == '1' if simulate is None else bool(simulate)
         self._servo_factory, self._sonar_factory = servo_factory, sonar_factory
         from .motion import MotionPlan
@@ -53,7 +55,14 @@ class Controller:
         self._battery = None
         self._battery_timestamp = None
         self._started = time.monotonic()
+        self._budget_path = Path(budget_path or Path(os.getenv('PIBOTPAL_DATA', '~/.local/share/pibotpal')).expanduser() / 'servo-power.json')
+        self._budget = {'max_active_servos': 3, 'per_servo_deg_s': 30.0, 'total_deg_s': 60.0, 'settle_ms': 80}
+        self._budget_error = None
+        self._budget_phase, self._active_servos = 'idle', []
+        self._last_group, self._group_finished = None, None
+        self._group_settle_until = 0.0
         self._read_offsets()
+        self._read_budget()
 
     def _error(self, message):
         with self._lock:
@@ -129,6 +138,8 @@ class Controller:
                 raise RuntimeError('Controller is closed')
             if self._busy or self._interrupting:
                 raise RuntimeError('Wait for the current action to stop before arming')
+            if self._budget_error:
+                raise RuntimeError('Repair servo budget before arming')
             if any(e.startswith('Calibration read failed:') for e in self._errors):
                 raise RuntimeError('Repair calibration before arming')
             self._cancel.clear()
@@ -173,6 +184,7 @@ class Controller:
             return {
                 'armed': self._armed, 'busy': self._busy, 'estop': self._estop,
                 'motion_id': self._motion_id,
+                'servo_budget': self.servo_budget(),
                 'action': self._action, 'action_error': self._action_error,
                 'simulate': self.simulate, 'servo_angles': angles,
                 'servo_offsets': list(self._offsets), 'servo_directions': list(DIRECTIONS),
@@ -190,6 +202,54 @@ class Controller:
                              'axes': 'x right, y forward, z up', 'body_dimensions_source': 'nominal linkage dimensions; not surveyed CAD'},
                 'stop_behavior': 'Cancel motion and hold last PWM command; power remains on',
             }
+
+    @staticmethod
+    def _validate_budget(max_active_servos, per_servo_deg_s, total_deg_s, settle_ms):
+        if isinstance(max_active_servos, bool) or not isinstance(max_active_servos, int) or not 1 <= max_active_servos <= 6:
+            raise ValueError('max_active_servos must be an integer from 1 to 6')
+        if isinstance(settle_ms, bool) or not isinstance(settle_ms, int) or not 40 <= settle_ms <= 500:
+            raise ValueError('settle_ms must be an integer from 40 to 500')
+        per_servo_deg_s, total_deg_s = finite(per_servo_deg_s), finite(total_deg_s)
+        if not 5 <= per_servo_deg_s <= 60 or not 5 <= total_deg_s <= 180:
+            raise ValueError('Servo rate must be 5–60 and total rate 5–180 degrees per second')
+        return dict(max_active_servos=max_active_servos, per_servo_deg_s=per_servo_deg_s,
+                    total_deg_s=total_deg_s, settle_ms=settle_ms)
+
+    def _read_budget(self):
+        try:
+            if self._budget_path.exists():
+                self._budget = self._validate_budget(**json.loads(self._budget_path.read_text()))
+        except Exception as exc:
+            self._budget_error = str(exc)
+            self._error(f'Servo budget read failed: {exc}')
+            self._estop = True
+
+    def servo_budget(self):
+        with self._lock:
+            return {**self._budget, 'active_servos': list(self._active_servos),
+                    'phase': self._budget_phase, 'unknown_position_settle_ms': max(1000, self._budget['settle_ms']),
+                    'error': self._budget_error, 'units': 'commanded degrees/second',
+                    'description': 'Commanded motion budget; no current feedback. Holding servos still draw power. Unknown initial positions cannot be rate limited.'}
+
+    def set_servo_budget(self, max_active_servos, per_servo_deg_s, total_deg_s, settle_ms):
+        values = self._validate_budget(max_active_servos, per_servo_deg_s, total_deg_s, settle_ms)
+        with self._lock:
+            if self._armed or self._busy or self._interrupting:
+                raise RuntimeError('Disarm and wait for motion to stop before saving servo budget')
+            self._budget_path.parent.mkdir(parents=True, exist_ok=True)
+            descriptor, name = tempfile.mkstemp(dir=self._budget_path.parent, prefix='.servo-power-')
+            try:
+                with os.fdopen(descriptor, 'w') as handle:
+                    json.dump(values, handle)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                os.replace(name, self._budget_path)
+            finally:
+                Path(name).unlink(missing_ok=True)
+            self._budget = values
+            self._budget_error = None
+            self._errors = [e for e in self._errors if not e.startswith('Servo budget read failed:')]
+            return self.servo_budget()
 
     @staticmethod
     def _speed(speed):
@@ -335,8 +395,13 @@ class Controller:
             self._check_cancel()
             for i, target in enumerate(angles):
                 self._check_cancel()
+                if target is None:
+                    continue
                 # Record the calibrated command after applying the physical range.
                 raw = max(-90, min(90, DIRECTIONS[i] * (target + self._offsets[i])))
+                applied = DIRECTIONS[i] * raw - self._offsets[i]
+                if self._angles[i] is not None and abs(applied - self._angles[i]) < 1e-9:
+                    continue
                 if self._servos:
                     self._servos[i].angle(raw)
                 with self._lock:
@@ -345,62 +410,131 @@ class Controller:
     def _move(self, targets, speed):
         self._move_path([targets], speed)
 
-    def _move_path(self, targets, speed):
-        """Stream a complete path on one clock; intermediate samples have no dwell.
+    def _groups(self, indices):
+        # Keep joints on the same leg together. A stricter configured limit
+        # splits a leg; larger limits never force unrelated legs to move.
+        limit = self._budget['max_active_servos']
+        result = []
+        for leg in range(4):
+            joints = [i for i in indices if i // 3 == leg]
+            result.extend(tuple(joints[n:n+limit]) for n in range(0, len(joints), limit))
+        return tuple(result)
 
-        Speed is a joint rate percentage (180 degrees/second at 100%). Single
-        pose commands ease into/out of motion. A missed deadline skips elapsed
-        samples instead of issuing a burst of stale commands to catch up.
+    def _group_begin(self, group, phase):
+        self._check_cancel()
+        now = time.monotonic()
+        wait_until = self._group_settle_until
+        if self._last_group is not None and tuple(group) != self._last_group:
+            wait_until = max(wait_until, self._group_finished + self._budget['settle_ms'] / 1000)
+        if wait_until > now:
+            with self._lock:
+                self._budget_phase, self._active_servos = 'settling', []
+            if self._cancel.wait(wait_until - now):
+                raise MotionCancelled()
+            self._check_cancel()
+        with self._lock:
+            self._budget_phase, self._active_servos = phase, list(group)
+
+    def _group_end(self, group):
+        self._last_group, self._group_finished = tuple(group), time.monotonic()
+
+    def _move_path(self, targets, speed):
+        """Serialize leg trajectories under a commanded travel budget.
+
+        Progress advances by at most one 20ms quantum per emitted sample.
+        Scheduler stalls stretch time, never create catch-up angle jumps.
+        A servo's initial physical position is unknowable without encoders:
+        initialize only one group, then allow at least 1000ms to settle. This
+        conservative delay does not confirm that the position was reached.
         """
         self._check_cancel()
-        self._ensure_servos()
-        with self._lock:
-            start = list(self._angles)
-        targets = list(targets)
+        targets = [list(target) for target in targets]
         if not targets:
             return
-        if any(a is None for a in start):
-            # The first commanded pose cannot interpolate from an unknown
-            # physical position. Subsequent path samples use the shared clock.
-            self._write(targets.pop(0))
-            if self._cancel.wait(0.25):
-                raise MotionCancelled()
+        self._ensure_servos()
+        try:
+            # Establish unknown joints without pretending to interpolate from a
+            # guessed position. Initialization remains staggered after a stop.
+            unknown = [i for i, angle in enumerate(self._angles) if angle is None]
+            for group in self._groups(unknown):
+                self._group_begin(group, 'initializing unknown positions')
+                sample = [None] * 12
+                for index in group:
+                    sample[index] = targets[0][index]
+                delay = max(1.0, self._budget['settle_ms'] / 1000)
+                try:
+                    self._write(sample)
+                finally:
+                    # Cancellation or an I/O failure may interrupt a group
+                    # after its first servo was already commanded.
+                    self._group_end(group)
+                    self._group_settle_until = time.monotonic() + delay
+                with self._lock:
+                    self._budget_phase, self._active_servos = 'settling unknown positions', []
+                if self._cancel.wait(delay):
+                    raise MotionCancelled()
+                self._check_cancel()
+            # Consecutive segments with the same changed joint groups share a
+            # continuous trajectory. In a crawl this keeps a foot's complete
+            # lift/swing/plant path together rather than pausing each waypoint.
+            previous = list(self._angles)
+            signature, run = None, []
+            for target in targets:
+                groups = self._groups([i for i, (a, b) in enumerate(zip(previous, target)) if abs(a-b) > 1e-9])
+                if not groups:
+                    previous = target
+                    continue
+                if signature is not None and groups != signature:
+                    self._stream_groups(run, signature, speed)
+                    run = []
+                signature = groups
+                run.append(target)
+                previous = target
+            if run:
+                self._stream_groups(run, signature, speed)
+        finally:
+            # Even a canceled active group needs settling before a different
+            # group may start in a subsequent accepted motion job.
             with self._lock:
-                start = list(self._angles)
-        points, lengths = [start], []
-        for target in targets:
-            distance = max(abs(a-b) for a,b in zip(points[-1], target))
-            if distance > 1e-9:
-                points.append(list(target))
-                lengths.append(distance)
-        if not lengths:
-            return
-        rate = 180.0 * speed / 100.0
-        total = sum(lengths)
-        ease = len(lengths) == 1
-        duration = max(0.02, total / rate * (1.5 if ease else 1.0))
-        started = time.monotonic()
-        deadline = started + 0.02
-        segment, consumed = 0, 0.0
-        while True:
-            self._check_cancel()
-            elapsed = max(0.0, time.monotonic() - started)
-            progress = min(1.0, elapsed / duration)
-            fraction = progress * progress * (3 - 2 * progress) if ease else progress
-            distance = total * fraction
-            while segment < len(lengths)-1 and distance > consumed + lengths[segment]:
-                consumed += lengths[segment]
-                segment += 1
-            weight = min(1.0, max(0.0, (distance-consumed)/lengths[segment]))
-            self._write([a+(b-a)*weight for a,b in zip(points[segment], points[segment+1])])
-            if progress >= 1:
-                return
-            now = time.monotonic()
-            if deadline <= now:
-                deadline += (math.floor((now-deadline)/0.02)+1)*0.02
-            if self._cancel.wait(max(0.0, deadline-now)):
-                raise MotionCancelled()
-            deadline += 0.02
+                if self._active_servos:
+                    self._group_end(self._active_servos)
+                self._active_servos, self._budget_phase = [], 'idle'
+
+    def _stream_groups(self, targets, groups, speed):
+        rate = min(180.0 * speed / 100.0, self._budget['per_servo_deg_s'])
+        aggregate = self._budget['total_deg_s']
+        for group in groups:
+            self._group_begin(group, 'moving')
+            start = [self._angles[i] for i in group]
+            points, durations = [start], []
+            for target in targets:
+                end = [target[i] for i in group]
+                delta = [abs(a-b) for a, b in zip(points[-1], end)]
+                duration = max(max(delta) / rate, sum(delta) / aggregate)
+                if duration > 1e-12:
+                    points.append(end)
+                    durations.append(duration)
+            elapsed, segment, consumed = 0.0, 0, 0.0
+            total = sum(durations)
+            deadline = time.monotonic() + .02
+            while elapsed < total - 1e-12:
+                self._check_cancel()
+                if self._cancel.wait(max(0, deadline - time.monotonic())):
+                    raise MotionCancelled()
+                self._check_cancel()
+                elapsed = min(total, elapsed + .02)
+                while segment < len(durations)-1 and elapsed > consumed + durations[segment]:
+                    consumed += durations[segment]
+                    segment += 1
+                weight = min(1, (elapsed - consumed) / durations[segment])
+                sample = [None] * 12
+                for n, index in enumerate(group):
+                    sample[index] = points[segment][n] + (points[segment+1][n] - points[segment][n]) * weight
+                self._write(sample)
+                # An expired deadline gives no extra progression allowance.
+                # Ensure a full control interval after slow device writes.
+                deadline = max(deadline + .02, time.monotonic() + .02)
+            self._group_end(group)
 
     def _run(self):
         while not self._closed.is_set():

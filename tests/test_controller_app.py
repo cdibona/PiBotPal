@@ -112,10 +112,14 @@ def test_quick_press_runs_real_simulated_pose_and_release_halts_gait(client):
     arm(client)
     tap(pad, 'South')
     wait_for(lambda: robot.status()['motion_id'] == 1)
-    wait_for(lambda: not robot.status()['busy'])
+    # Four initially unknown leg groups each receive a one-second settle.
+    wait_for(lambda: not robot.status()['busy'], timeout=6)
     assert all(angle is not None for angle in robot.status()['servo_angles'])
     assert robot.status()['action_error'] is None
     assert robot._hat is None and robot._servos == []
+    # Let the controller observe the completed action and neutral inputs before
+    # issuing the next direction; inputs during an action are not queued.
+    ready(client)
     axis(pad, 'Hat Y', -32767)
     wait_for(lambda: robot.status()['motion_id'] == 2 and robot.status()['busy'],
              details=lambda: {'robot': robot.status(), 'input': pad.status(),

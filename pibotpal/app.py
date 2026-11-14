@@ -25,6 +25,7 @@ from .plans import PlanStore, parse_plan
 from .hardware_options import HardwareOptions
 from .gamepad import GamepadMonitor
 from .gamepad_actions import MappingStore, GamepadDriver, defaults as controller_defaults
+from .power import PowerMonitor
 from . import integrations
 
 
@@ -45,6 +46,8 @@ def create_app(controller=None, media=None):
     gamepad = GamepadMonitor(simulate=controller.simulate, settings_path=media.root / 'controller.json')
     controller_mappings = MappingStore(media.root / 'controller-mapping.json')
     gamepad_driver = GamepadDriver(controller_mappings)
+    power_monitor = PowerMonitor(simulate=controller.simulate)
+    power_guard = {'generation': 0, 'last_stop': None}
     motion_gate = asyncio.Lock()
     settings = Settings(media.root)
     llm_example = {'id': None}
@@ -114,6 +117,8 @@ def create_app(controller=None, media=None):
         """Read live hardware/media state and renew the 15-second operator heartbeat."""
         lease['last_seen'] = time.monotonic()
         state = await invoke(controller.status)
+        state['power']['pi'] = power_monitor.status()
+        state['power']['last_motion_stop'] = power_guard['last_stop']
         state.update(media.status())
         state['examples'] = examples.status()
         state['plan'] = plans.status()
@@ -140,6 +145,8 @@ def create_app(controller=None, media=None):
             was_armed = controller.status()['armed']
             if armed:
                 ensure_manual()
+                if power_monitor.status()['under_voltage'] is True:
+                    raise ValueError('Pi undervoltage is active; wait for power to recover before arming')
             if not armed:
                 await invoke(plans.stop)
                 await invoke(examples.stop)
@@ -291,6 +298,23 @@ def create_app(controller=None, media=None):
         """Restore D-pad/left-stick driving, A stand, B sit, X wave, Y ready, Select stop. Never starts movement."""
         default = controller_defaults()
         return await controller_save_mapping(default['speed'], default['deadzone'], default['bindings'])
+
+    @mcp.tool()
+    async def power_get() -> dict:
+        """Read CPU frequency limits, Pi undervoltage flags, and the commanded servo motion budget. No current sensor is available."""
+        robot = controller.status()
+        return {'host': power_monitor.status(), 'servos': controller.servo_budget(),
+                'armed': robot['armed'], 'busy': robot['busy'], 'last_motion_stop': power_guard['last_stop']}
+
+    @mcp.tool()
+    async def servo_power_set(max_active_servos: int, per_servo_deg_s: float,
+                              total_deg_s: float, settle_ms: int) -> dict:
+        """Persist servo concurrency/rate/settling limits while disarmed and idle. Does not move servos or measure amperes."""
+        async with motion_gate:
+            await invoke(controller.set_servo_budget, max_active_servos, per_servo_deg_s, total_deg_s, settle_ms)
+            gamepad_driver.reset()
+            gamepad.drain_input_events()
+        return await power_get()
 
     @mcp.tool()
     async def microphone(enabled: bool) -> dict:
@@ -477,7 +501,14 @@ def create_app(controller=None, media=None):
             await asyncio.sleep(1)
             expired = False
             async with motion_gate:
-                if time.monotonic() - lease['last_seen'] > 15 and (controller.status().get('armed') or media.status()['microphone']['enabled']):
+                host = power_monitor.status()
+                new_fault = host['fault_generation'] > power_guard['generation']
+                power_guard['generation'] = host['fault_generation']
+                if (host['under_voltage'] is True or new_fault) and controller.status().get('armed'):
+                    expired = True
+                    power_guard['last_stop'] = {'timestamp': time.time(), 'reason': 'Pi undervoltage detected; motion stopped'}
+                    await stop_locked()
+                elif time.monotonic() - lease['last_seen'] > 15 and (controller.status().get('armed') or media.status()['microphone']['enabled']):
                     expired = True
                     await stop_locked()
             if expired:
@@ -530,6 +561,7 @@ def create_app(controller=None, media=None):
                 fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
             except BlockingIOError:
                 raise RuntimeError('Another PiBotPal process owns this hardware')
+            await invoke(power_monitor.start)
             await invoke(controller.start)
             await invoke(media.start)
             await invoke(gamepad.start)
@@ -557,6 +589,7 @@ def create_app(controller=None, media=None):
                 await invoke(controller.close)
                 await invoke(gamepad.close)
                 await invoke(media.close)
+                await invoke(power_monitor.close)
 
     app = FastAPI(title='PiBotPal', lifespan=lifespan, docs_url=None, redoc_url=None)
     app.state.controller, app.state.media, app.state.mcp = controller, media, mcp
@@ -564,6 +597,7 @@ def create_app(controller=None, media=None):
     app.state.plans, app.state.hardware_options = plans, hardware_options
     app.state.gamepad = gamepad
     app.state.gamepad_driver, app.state.controller_mappings = gamepad_driver, controller_mappings
+    app.state.power_monitor = power_monitor
 
     @app.middleware('http')
     async def private_origin(request: Request, call_next):
