@@ -168,8 +168,22 @@ Editing Stand, for example, changes Stand everywhere. A running action takes a
 snapshot of its definition; edits require idle, disarmed motion, with an explicit
 **Disarm and save action** option when armed. Saving never moves a servo.
 
-Choose **New keyframe action** to create an action, or **Save as new action** to
-copy an existing one. Each timeline frame contains twelve logical servo angles,
+Choose **New keyframe action** to create an action, or **Duplicate action** beside
+its title to copy it. A duplicate starts as a separately named draft, such as
+`wave copy`; save it to add it to the shared library. Every frame, speed, hold,
+and playback mode is copied, including current unsaved edits. Editing the copy
+does not change its source.
+
+The filmstrip shows a projected robot pose for each frame, with timing and an
+independent preview cursor. Select a thumbnail to edit its pose, drag frames to
+reorder them, or use the Earlier/Later controls (Alt+Left/Right on a frame).
+Add, duplicate, or remove frames
+alongside the strip. Local preview supports play/pause, rewind, looping, and
+time scrubbing; looping never requests repeated robot movement. Metadata and the
+full twelve-angle table are available in expandable sections below the focused
+frame editor.
+
+Each timeline frame contains twelve logical servo angles,
 a transition speed into that frame in degrees per second, and an optional hold
 after arrival. Add, duplicate, reorder, or remove frames, enter joint targets,
 or capture the current complete, idle commanded pose. The browser preview and
@@ -197,8 +211,11 @@ saved sequence. Frame rates are 1–144°/s and holds 0–30 seconds; an action 
 contain 128 frames and run for at most 300 seconds. The caller's existing speed
 setting caps the rate at `speed * 1.8`°/s; the planner's Play action uses 80 so the
 frame rates govern. Per-servo and total power budgets can slow execution further.
-The browser preview illustrates poses and frame timing, without simulating the
-power scheduler or unknown startup positions.
+The browser preview includes every frame's hold, including the final hold, and
+uses the destination frame's speed for each transition. Its timeline starts at
+the first pose; approaching that pose from the real robot's initial position is
+not included. Preview timing illustrates servo commands without simulating the
+power scheduler, so actual movement can take longer.
 
 Under **Routines**, choose **New plan**, name it, and add shared actions, saved
 poses, or waits. Reorder and edit steps, save, then arm and run explicitly.

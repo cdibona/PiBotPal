@@ -96,6 +96,13 @@ with tempfile.TemporaryDirectory(prefix='pibotpal-planner-browser-') as director
         expect(page.locator('#action-run')).to_have_text('▶ Arm & play on robot')
         assert page.locator('#frame-angle-0').input_value() != '0', 'Unknown position must never create zero-angle targets'
 
+        def open_details(id):
+            details = page.locator('#' + id)
+            if details.get_attribute('open') is None:
+                details.locator('summary').click()
+
+        open_details('action-angle-details')
+
         def sync(**changes):
             state.update(changes)
             if fixture == 'isolated': page.evaluate('(s)=>{window.robot=s;window.planner.update(s)}', state)
@@ -119,8 +126,29 @@ with tempfile.TemporaryDirectory(prefix='pibotpal-planner-browser-') as director
         page.locator('#frame-right').click()
         page.locator('#action-preview').click()
         page.wait_for_timeout(150)
-        page.locator('#action-scrub').fill('0.5')
-        expect(page.locator('#action-preview-detail')).to_contain_text('Preview frame 1.50')
+        page.locator('#action-time-scrub').fill('0.2')
+        expect(page.locator('#action-preview-time')).to_have_text('0.20 / 0.80 s')
+        expect(page.locator('#action-preview-detail')).to_contain_text('Hold at frame 1')
+        # Loop and pause are local transport controls, with a separate edit frame.
+        page.locator('#action-rewind').click()
+        expect(page.locator('#action-preview-time')).to_have_text('0.00 / 0.80 s')
+        expect(page.locator('#frame-editor-title')).to_contain_text('Frame 1')
+        page.locator('#action-loop').click()
+        expect(page.locator('#action-loop')).to_have_attribute('aria-pressed', 'true')
+        page.locator('#action-preview').click()
+        page.wait_for_timeout(950)
+        expect(page.locator('#action-preview')).to_have_text('Ⅱ Pause')
+        page.locator('#action-preview').click()
+        paused_time = page.locator('#action-preview-time').inner_text()
+        page.wait_for_timeout(150)
+        expect(page.locator('#action-preview-time')).to_have_text(paused_time)
+        page.locator('#action-loop').click()
+        page.locator('#action-preview').click()
+        expect(page.locator('#action-preview')).to_have_text('▶ Preview', timeout=3000)
+        expect(page.locator('#action-preview-time')).to_have_text('0.80 / 0.80 s')
+        # Preview never changes which pose the inspector will edit or remove.
+        expect(page.locator('#frame-editor-title')).to_contain_text('Frame 1')
+        page.locator('#frame-next').click()
         page.locator('#frame-remove').click()
         expect(page.locator('.keyframe-card')).to_have_count(1)
         expect(page.locator('#frame-speed')).to_have_value('17')
@@ -165,6 +193,7 @@ with tempfile.TemporaryDirectory(prefix='pibotpal-planner-browser-') as director
         # Wave and gait definitions are real library frames, editable like Stand.
         page.locator('[data-action="wave"]').click()
         assert page.locator('.keyframe-card').count() > 1
+        expect(page.locator('.keyframe-card svg')).to_have_count(len(store.get('wave')['frames']))
         original_wave = copy.deepcopy(store.get('wave')['frames'])
         page.locator('.keyframe-card[data-frame="1"]').click()
         page.locator('.preview-joint-node[data-servo="0"]').click()
@@ -185,7 +214,78 @@ with tempfile.TemporaryDirectory(prefix='pibotpal-planner-browser-') as director
         assert modified_wave[1]['angles'][:2] == [-35, 40]
         page.locator('.keyframe-card[data-frame="1"]').click()
         expect(page.locator('#frame-angle-0')).to_have_value('-35')
+
+        first_thumbnail = page.locator('.keyframe-card[data-frame="0"] svg').inner_html()
+        page.locator('.keyframe-card[data-frame="0"]').drag_to(page.locator('.keyframe-card[data-frame="1"]'))
+        expect(page.locator('#frame-editor-title')).to_contain_text('Frame 2')
+        assert page.locator('.keyframe-card[data-frame="1"] svg').inner_html() == first_thumbnail
+        expect(page.locator('#action-edit-state')).to_have_text('UNSAVED CHANGES')
+        assert store.get('wave')['frames'] == modified_wave
+        page.locator('#frame-left').click()
+        page.locator('.keyframe-card[data-frame="0"]').press('Alt+ArrowRight')
+        expect(page.locator('#frame-editor-title')).to_contain_text('Frame 2')
+        page.locator('.keyframe-card[data-frame="1"]').press('Alt+ArrowLeft')
+        expect(page.locator('#frame-editor-title')).to_contain_text('Frame 1')
+        page.locator('#action-discard').click()
+
+        # Whole-action duplication preserves every frame and timing value, then
+        # edits and saves under a separate name without touching the source.
+        source_wave = copy.deepcopy(store.get('wave'))
+        open_details('action-metadata-details')
+        draft_description = source_wave['description'] + ' Unpublished draft variation.'
+        page.locator('#action-description').fill(draft_description)
+        saved_count = len([r for r in requests if r['name'] == 'action_save'])
+        page.locator('#action-copy').click()
+        expect(page.locator('#action-name')).to_have_value('wave copy')
+        expect(page.locator('#action-name')).to_be_editable()
+        expect(page.locator('.keyframe-card')).to_have_count(len(source_wave['frames']))
+        assert 'wave copy' not in store.names()
+        assert len([r for r in requests if r['name'] == 'action_save']) == saved_count
+        page.locator('#action-save').click()
+        expect(page.locator('#action-notice')).to_contain_text('Action saved')
+        assert store.get('wave copy')['frames'] == source_wave['frames']
+        assert store.get('wave copy')['playback'] == source_wave['playback']
+        assert store.get('wave copy')['description'] == draft_description
+        page.locator('.keyframe-card[data-frame="1"]').click()
+        page.locator('.preview-joint-node[data-servo="0"]').click()
+        page.locator('#selected-joint-angle').fill('-30')
+        page.locator('#action-save').click()
+        expect(page.locator('#action-notice')).to_contain_text('Action saved')
+        assert store.get('wave copy')['frames'][1]['angles'][0] == -30
+        assert store.get('wave') == source_wave
+        page.locator('[data-action="wave"]').click()
+        page.locator('#action-copy').click()
+        expect(page.locator('#action-name')).to_have_value('wave copy 2')
+        page.locator('#action-discard').click()
+        assert 'wave copy 2' not in store.names()
+        assert len([r for r in requests if r['name'] == 'move']) == 1
         page.locator('[data-action="forward"]').click()
+        # Long sequences keep selected frames and the playing cursor visible
+        # inside the filmstrip without scrolling the entire page.
+        for _ in range(8):
+            page.locator('#frame-next').click()
+        expect(page.locator('#frame-editor-title')).to_contain_text('Frame 9')
+        assert page.locator('.filmstrip-scroll').evaluate('''strip => {
+            const frame = strip.querySelector('.keyframe-card[aria-pressed="true"]').getBoundingClientRect();
+            const bounds = strip.getBoundingClientRect();
+            return strip.scrollLeft > 0 && frame.left >= bounds.left - 1 && frame.right <= bounds.right + 1;
+        }''')
+        page.locator('#action-rewind').click()
+        assert page.locator('.filmstrip-scroll').evaluate('strip => strip.scrollLeft') == 0
+        duration = float(page.locator('#action-time-scrub').get_attribute('max'))
+        page.locator('#action-time-scrub').fill(f'{duration - .2:.3f}')
+        assert page.locator('.filmstrip-scroll').evaluate('strip => strip.scrollLeft') == 0
+        page.locator('#action-preview').click()
+        page_y = page.evaluate('scrollY')
+        expect(page.locator('#action-preview')).to_have_text('▶ Preview', timeout=3000)
+        assert page.locator('.filmstrip-scroll').evaluate('''strip => {
+            const cursor = strip.querySelector('.filmstrip-playhead').getBoundingClientRect();
+            const bounds = strip.getBoundingClientRect();
+            return strip.scrollLeft > 0 && cursor.left >= bounds.left && cursor.right <= bounds.right;
+        }''')
+        assert page.evaluate('scrollY') == page_y
+        expect(page.locator('#frame-editor-title')).to_contain_text('Frame 1')
+        open_details('action-metadata-details')
         expect(page.locator('#action-playback')).to_have_value('continuous')
         page.locator('#action-playback').select_option('keyframes')
         expect(page.locator('#action-edit-state')).to_have_text('UNSAVED CHANGES')
@@ -204,7 +304,7 @@ with tempfile.TemporaryDirectory(prefix='pibotpal-planner-browser-') as director
         expect(page.locator('[data-action="my greeting"]')).to_be_visible()
         assert len(store.get('my greeting')['frames']) == 2
         if fixture == 'full': expect(page.locator('#dashboard-action option[value="my greeting"]')).to_have_count(1)
-        else: assert page.evaluate('window.changedCatalog') == 3
+        else: assert page.evaluate('window.changedCatalog') == 5
         page.locator('#action-copy').click()
         page.locator('#action-name').fill('temporary action')
         page.locator('#action-save').click()
@@ -236,7 +336,8 @@ with tempfile.TemporaryDirectory(prefix='pibotpal-planner-browser-') as director
         # Saving refreshes the action library while its panel is hidden. On
         # returning, the preview must use its actual visible width again.
         page.locator('#planner-actions-tab').click()
-        expect(page.locator('#action-pose-preview')).to_have_attribute('viewBox', '0 0 680 190' if width == 1440 else '0 0 340 380')
+        canvas_width = page.locator('#action-pose-preview').evaluate('(svg)=>svg.clientWidth')
+        expect(page.locator('#action-pose-preview')).to_have_attribute('viewBox', '0 0 680 190' if canvas_width >= 500 else '0 0 340 380')
         page.locator('#planner-routines-tab').click()
         expect(page.locator('#plan-run')).to_be_enabled()
         expect(page.locator('#plan-run')).to_have_text('▶ Arm & play on robot')
@@ -260,6 +361,10 @@ with tempfile.TemporaryDirectory(prefix='pibotpal-planner-browser-') as director
         assert page.evaluate('document.documentElement.scrollWidth <= innerWidth + 1'), f'Horizontal page overflow: {fixture} {width}'
         page.locator('#planner-actions-tab').click()
         page.locator('[data-action="wave"]').click()
+        for id in ('action-angle-details', 'action-metadata-details'):
+            if page.locator('#' + id).get_attribute('open') is not None:
+                page.locator('#' + id + ' summary').click()
+        page.evaluate("document.documentElement.dataset.theme='dark'")
         page.evaluate('window.scrollTo(0,0)')
         page.screenshot(path=f'/tmp/pibotpal-planner-{fixture}-{width}.png', full_page=True)
         page.evaluate("document.documentElement.dataset.theme='light'")

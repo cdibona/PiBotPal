@@ -35,11 +35,25 @@ with tempfile.TemporaryDirectory() as directory,MonkeyPatch.context() as mp:
    page.route('http://editor.test/**',route)
    page.goto('http://editor.test/#plan',wait_until='domcontentloaded')
    page.locator('[data-action="editor playback check"]').click(timeout=30000)
+   source=robot.actions.get('editor playback check')
+   page.locator('#action-copy').click()
+   expect(page.locator('#action-name')).to_have_value('editor playback check copy')
+   page.locator('#action-save').click()
+   expect(page.locator('#action-notice')).to_contain_text('Action saved')
+   assert robot.actions.get('editor playback check copy')['frames']==source['frames']
+   page.locator('.keyframe-card[data-frame="1"]').click()
+   page.locator('.preview-joint-node[data-servo="0"]').click()
+   copied_angle=second['angles'][0]+2
+   page.locator('#selected-joint-angle').fill(str(copied_angle))
+   page.locator('#action-save').click()
+   expect(page.locator('#action-notice')).to_contain_text('Action saved')
+   copied_target=robot.actions.get('editor playback check copy')['frames'][1]['angles']
+   assert copied_target[0]==copied_angle and robot.actions.get('editor playback check')==source
    expect(page.locator('#action-run')).to_contain_text('Arm & play')
    page.locator('#action-run').click()
    expect(page.locator('#action-progress')).to_contain_text('playing',timeout=10000)
    expect(page.locator('#action-progress')).to_contain_text('complete',timeout=20000)
-   assert robot.status()['servo_angles']==second['angles']
+   assert robot.status()['servo_angles']==copied_target
    page.locator('#action-stop').click()
    expect(page.locator('#action-transport-notice')).to_contain_text('stopped')
    assert not robot.status()['armed']
@@ -58,7 +72,7 @@ with tempfile.TemporaryDirectory() as directory,MonkeyPatch.context() as mp:
    assert not errors,errors
    browser.close()
   assert robot._hat is None and robot._servos == []
-  print('PASS real MCP + browser on simulated controller: action arm/play/complete/stop, routine arm/play/complete/replay/stop; no physical hardware.',flush=True)
+  print('PASS real MCP + browser on simulated controller: duplicate/edit without changing source, action arm/play/complete/stop, routine arm/play/complete/replay/stop; no physical hardware.',flush=True)
  finally:
   try:next(gen)
   except StopIteration:pass

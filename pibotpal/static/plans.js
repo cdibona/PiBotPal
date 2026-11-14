@@ -5,7 +5,7 @@ const $ = id => document.getElementById(id);
 const ACTIONS = ['stand','sit','ready','forward','backward','turn left','turn right','turn left angle','turn right angle','push up','wave','look left','look right','look up','look down','dance'];
 const copy = value => JSON.parse(JSON.stringify(value));
 const markup = `
-  <div class="plan-intro"><div><p class="eyebrow">KEYFRAMES · ACTIONS · ROUTINES</p><h2>Build the way your robot moves.</h2><p>Edit shared actions frame by frame, or create a new routine from actions, poses and waits.</p></div><button id="plan-refresh" class="outline">Refresh library</button></div>
+  <div class="plan-intro planner-library-toolbar"><p>SHARED MOTION LIBRARY</p><button id="plan-refresh" class="outline">Refresh library</button></div>
   <div id="plan-notice" class="notice" role="status" aria-live="polite" hidden></div>
   <div class="planner-tabs" role="tablist" aria-label="Planner sections"><button id="planner-actions-tab" type="button" role="tab" aria-selected="true" aria-controls="planner-actions">Actions & keyframes</button><button id="planner-routines-tab" type="button" role="tab" aria-selected="false" aria-controls="planner-routines" tabindex="-1">Routines & saved poses</button></div>
   <section id="planner-actions" role="tabpanel" aria-labelledby="planner-actions-tab"></section>

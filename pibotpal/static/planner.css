@@ -131,3 +131,57 @@
 .planner-play-progress progress { display: block; width: 100%; height: 9px; margin-top: 12px; accent-color: var(--teal); }
 .plan-step.is-playing { border-color: var(--orange); box-shadow: inset 4px 0 0 var(--orange); }
 @media (max-width: 560px) { .planner-playback { padding: 13px; } .planner-play-buttons { gap: 8px; } }
+/* Filmstrip studio: sequence first, compact pose inspector second. */
+.action-title-row { flex-wrap: wrap; gap: 14px; }
+.action-title-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.action-title-actions button { padding: 9px 12px; font-size: 12px; }
+.action-title-actions .primary { width: auto; margin: 0; }
+.action-sequencer { min-width: 0; border: 1px solid var(--line); background: var(--panel-2); border-radius: 8px; padding: 16px; }
+.action-sequencer .keyframe-timeline-heading { align-items: flex-start; }
+.action-sequencer .keyframe-timeline-heading .caption { margin-top: 6px; }
+.action-sequencer #action-frame-count { white-space: nowrap; font-variant-numeric: tabular-nums; }
+.sequence-preview-transport { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; margin: 14px 0; }
+.sequence-preview-transport button { font-size: 12px; padding: 8px 11px; }
+.sequence-preview-transport [aria-pressed="true"] { background: var(--accent-soft); border-color: var(--teal); color: var(--teal); }
+#action-preview-time { color: var(--text); font-size: 13px; font-variant-numeric: tabular-nums; margin-left: 4px; }
+.preview-only-label { font-size: 10px; letter-spacing: .08em; color: var(--muted); margin-left: auto; }
+.filmstrip-scroll { overflow-x: auto; overscroll-behavior-x: contain; padding: 0 0 12px; }
+.filmstrip-track { width: max-content; min-width: 100%; position: relative; }
+.filmstrip-ruler { display: flex; gap: 10px; color: var(--muted); font-size: 11px; font-variant-numeric: tabular-nums; border-bottom: 1px solid var(--line); padding-bottom: 7px; }
+.filmstrip-ruler span { flex: 0 0 144px; text-align: center; }
+.action-sequencer .keyframe-timeline { overflow: visible; padding: 9px 0 3px; width: max-content; max-width: none; }
+.action-sequencer .keyframe-timeline > div { flex: 0 0 144px; width: 144px; }
+.action-sequencer .keyframe-timeline > div::after { display: none; }
+.action-sequencer .keyframe-card { width: 144px; padding: 10px; gap: 5px; min-height: 185px; position: relative; border-top: 5px solid var(--line); border-bottom: 5px solid var(--line); }
+.action-sequencer .keyframe-card strong { font-size: 11px; letter-spacing: .06em; font-weight: 600; }
+.action-sequencer .keyframe-card small { font-size: 11px; }
+.action-sequencer .keyframe-card[aria-pressed="true"] { border-color: var(--teal); box-shadow: 0 0 0 1px var(--teal); }
+.action-sequencer .keyframe-card.is-previewing { background: color-mix(in srgb,var(--teal) 9%,var(--input)); }
+.action-sequencer .keyframe-card.is-playing { border-color: var(--orange); box-shadow: 0 0 0 1px var(--orange); }
+.action-sequencer .keyframe-card.is-dragging { opacity: .4; }
+.action-sequencer .keyframe-card.is-drop-target { box-shadow: -4px 0 0 var(--orange); }
+.pose-thumbnail { display: block; width: 122px; height: 78px; background: var(--panel-2); border-radius: 4px; pointer-events: none; }
+.filmstrip-playhead { position: absolute; top: 0; bottom: 1px; width: 2px; background: var(--orange); pointer-events: none; z-index: 2; opacity: .85; }
+.filmstrip-playhead::before { content: ''; position: absolute; top: 0; left: -4px; width: 10px; height: 10px; background: var(--orange); clip-path: polygon(0 0,100% 0,50% 100%); }
+.sequence-time-scrubber { margin-top: 2px; }
+.action-sequencer .keyframe-tools { margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+.sequence-inspector { display: grid; grid-template-columns: minmax(0,1.3fr) minmax(260px,1fr); gap: 18px; align-items: start; }
+.sequence-inspector .keyframe-preview { padding: 14px; }
+.sequence-inspector .keyframe-preview-heading { flex-wrap: wrap; align-items: start; }
+.sequence-inspector #action-pose-preview { max-height: 340px; margin-bottom: 0; }
+.sequence-frame-inspector { display: flex; flex-direction: column; gap: 14px; }
+.sequence-frame-inspector .selected-joint-editor { margin: 0; }
+.sequence-frame-inspector .keyframe-transition { grid-template-columns: minmax(0,1fr); gap: 12px; }
+.sequence-details { border: 1px solid var(--line); border-radius: 7px; min-width: 0; }
+.sequence-details summary { cursor: pointer; color: var(--text); font-size: 13px; padding: 13px 16px; }
+.sequence-details[open] summary { border-bottom: 1px solid var(--line); }
+.sequence-details-body { display: flex; flex-direction: column; gap: 16px; padding: 16px; }
+.sequence-details-body textarea { width: 100%; }
+@media (max-width: 1150px) { .sequence-inspector { grid-template-columns: minmax(0,1fr); } .sequence-frame-inspector { display: grid; grid-template-columns: 1fr 1fr; align-items: start; } .sequence-frame-inspector .caption { grid-column: 1 / -1; } }
+@media (max-width: 780px) { .action-title-actions { justify-content: flex-start; width: 100%; } .action-sequencer { padding: 12px; } .action-sequencer .keyframe-timeline-heading { flex-wrap: wrap; gap: 4px; } .preview-only-label { width: 100%; margin: 2px 0 0; } .sequence-frame-inspector { display: flex; } .sequence-details-body { padding: 12px; } }
+.planner-library-toolbar { margin: 0 0 14px; gap: 12px; }
+.planner-library-toolbar > p { font-size: 11px; letter-spacing: .1em; color: var(--muted); margin: 0; }
+.planner-library-toolbar button { font-size: 12px; padding: 8px 12px; }
+.action-studio-toolbar { align-items: center; margin-bottom: 16px; }
+.action-studio-toolbar p { margin: 0; }
+.action-title-row .caption { text-align: left; }

@@ -1,4 +1,5 @@
 // SPDX-License-Identifier: MIT
+import {uniqueActionName, sequenceTiming, sampleSequence, createPoseThumbnail} from './sequencer.js';
 const copy = value => JSON.parse(JSON.stringify(value));
 const JOINTS = ['End / knee', 'Shoulder', 'Angle / hip'];
 const LEGS = ['Right front', 'Left front', 'Left rear', 'Right rear'];
@@ -9,34 +10,39 @@ const svgNS = 'http://www.w3.org/2000/svg';
 
 export function initActionsEditor({root, call, getStatus, onChanged, onAddToPlan, playback}) {
   root.innerHTML = `
-    <div class="action-library-intro"><div><h2>One library for every controller</h2><p>Stand, Sit, Wave and your own actions are made of servo keyframes. Saving an action updates the dashboard, USB controller, plans and MCP clients.</p></div><button id="action-new" type="button" class="primary">+ New keyframe action</button></div>
+    <div class="action-library-intro action-studio-toolbar"><p>Choose an action to edit, or duplicate it to make your own.</p><button id="action-new" type="button" class="primary">+ New keyframe action</button></div>
     <div class="keyframe-workspace">
       <aside class="panel action-library-panel" aria-label="Shared motion actions"><div class="panel-heading"><h3>Actions</h3><span id="action-count" class="tag">LOADING</span></div><label class="action-search">Find an action<input id="action-search" type="search" placeholder="Stand, wave, my action…"></label><div id="action-library" class="action-library"></div></aside>
-      <article class="panel keyframe-editor"><div class="panel-heading"><div><h2 id="action-editor-title">Choose an action</h2><p id="action-origin" class="caption">Loading the shared motion library.</p></div><span id="action-edit-state" class="tag">LOADING</span></div>
+      <article class="panel keyframe-editor"><div class="panel-heading action-title-row"><div><h2 id="action-editor-title">Choose an action</h2><p id="action-origin" class="caption">Loading the shared motion library.</p></div><div class="action-title-actions"><span id="action-edit-state" class="tag">LOADING</span><button id="action-copy" type="button">⧉ Duplicate action</button><button id="action-save" type="submit" form="action-form" class="primary" disabled>Save action</button></div></div>
         <div class="action-transport" aria-label="Action playback on the robot"><div class="action-transport-buttons"><button id="action-run" type="button" class="primary" disabled>▶ Arm &amp; play on robot</button><button id="action-stop" type="button" class="danger">■ Stop robot</button></div><p id="action-run-hint" class="caption">Select a saved action to play it on the robot.</p><p id="action-progress" class="action-progress" role="status" aria-live="polite"></p><p id="action-transport-notice" class="notice" role="status" hidden></p></div>
         <form id="action-form" class="admin-form" novalidate>
-          <div class="action-metadata"><label>Action name<input id="action-name" maxlength="64" required placeholder="my greeting"></label><label>Playback<select id="action-playback"><option value="keyframes">Complete each keyframe</option><option value="continuous">Continuous sampled path</option></select></label></div>
-          <label>Description<textarea id="action-description" maxlength="2000" rows="2" placeholder="What this action should do"></textarea></label>
-          <p id="action-playback-help" class="caption"></p>
-          <div class="keyframe-timeline-heading"><h3>Keyframes</h3><span id="action-frame-count" class="caption">0 frames</span></div>
-          <div id="action-timeline" class="keyframe-timeline" role="list" aria-label="Action keyframes"></div>
-          <div class="keyframe-tools"><button id="frame-add" type="button">+ Add frame</button><button id="frame-duplicate" type="button">Duplicate frame</button><button id="frame-left" type="button" aria-label="Move selected frame earlier">← Earlier</button><button id="frame-right" type="button" aria-label="Move selected frame later">Later →</button><button id="frame-remove" type="button" class="delete-button">Remove frame</button></div>
+          <div id="action-notice" class="notice" role="status" aria-live="polite" hidden></div><p id="action-validation" class="keyframe-validation" role="status"></p>
+          <section class="action-sequencer" aria-label="Keyframe filmstrip">
+            <div class="keyframe-timeline-heading"><div><h3>Keyframe filmstrip</h3><p class="caption">Click a pose to edit. Drag to reorder, or use Earlier / Later.</p></div><span id="action-frame-count" class="caption">0 frames</span></div>
+            <div class="sequence-preview-transport" aria-label="Browser preview controls"><button id="action-rewind" type="button" aria-label="Rewind browser preview">↤ Rewind</button><button id="action-preview" type="button" class="outline">▶ Preview</button><button id="action-loop" type="button" aria-pressed="false">↻ Loop</button><output id="action-preview-time">0.00 / 0.00 s</output><span class="preview-only-label">BROWSER ONLY</span></div>
+            <div class="filmstrip-scroll"><div class="filmstrip-track"><div id="action-ruler" class="filmstrip-ruler" aria-hidden="true"></div><div id="action-timeline" class="keyframe-timeline" role="list" aria-label="Action keyframes"></div><div id="action-playhead" class="filmstrip-playhead" aria-hidden="true"></div></div></div>
+            <label class="preview-scrubber sequence-time-scrubber">Preview time<input id="action-time-scrub" type="range" min="0" max="0" step="0.001" value="0"></label>
+            <p id="action-preview-detail" class="caption">Preview starts at the first saved pose; the robot’s approach to that pose is not timed.</p>
+            <div class="keyframe-tools"><button id="frame-previous" type="button" aria-label="Select previous keyframe">‹ Previous</button><button id="frame-next" type="button" aria-label="Select next keyframe">Next ›</button><button id="frame-add" type="button">+ Add frame</button><button id="frame-duplicate" type="button">Duplicate frame</button><button id="frame-left" type="button" aria-label="Move selected frame earlier">← Earlier</button><button id="frame-right" type="button" aria-label="Move selected frame later">Later →</button><button id="frame-remove" type="button" class="delete-button">Remove frame</button></div>
+          </section>
           <div class="selected-keyframe-heading"><h3 id="frame-editor-title">Frame 1</h3><button id="frame-capture" type="button">Use current servo positions</button></div>
-          <div class="keyframe-transition"><label>Transition speed into this frame<div class="keyframe-unit"><input id="frame-speed" type="number" min="1" max="144" step="any" required><span>°/s</span></div></label><label>Hold after reaching this frame<div class="keyframe-unit"><input id="frame-hold" type="number" min="0" max="30" step="any" required><span>seconds</span></div></label></div>
-          <p id="action-budget-hint" class="caption"></p>
-          <div class="keyframe-preview"><div class="keyframe-preview-heading"><div><h3>Pose preview</h3><p class="caption">Side view of each leg. Click a keyframe, then click a joint to edit its angle. Preview and edits stay in the browser.</p></div><button id="action-preview" type="button" class="outline">▶ Preview sequence</button></div><svg id="action-pose-preview" viewBox="0 0 680 190" role="group" aria-label="Interactive keyframe servo joints"></svg><div id="selected-joint-editor" class="selected-joint-editor"><div><strong id="selected-joint-name">Select a joint above</strong><p id="selected-joint-detail" class="caption">The twelve outlined nodes are servo pivots. The solid feet are endpoints.</p></div><div class="selected-joint-inputs"><label>Joint angle<input id="selected-joint-slider" type="range" min="-90" max="90" step="0.1" disabled></label><label>Degrees<div class="keyframe-unit"><input id="selected-joint-angle" type="number" step="any" disabled><span>°</span></div></label></div></div><label class="preview-scrubber">Scrub keyframes<input id="action-scrub" type="range" min="0" max="0" step="0.01" value="0"></label><p id="action-preview-detail" class="caption">Preview uses commanded angles, without position feedback.</p></div>
-          <div id="frame-angles" class="keyframe-leg-grid"></div>
-          <p class="caption keyframe-position-note">Angles are logical servo commands. The first physical pose is unknown after restart; initialization is staggered and cannot be previewed as measured movement.</p>
-          <div id="action-notice" class="notice" role="status" aria-live="polite" hidden></div>
-          <p id="action-validation" class="keyframe-validation" role="status"></p>
-          <div class="action-save-row"><button id="action-save" type="submit" class="primary" disabled>Save action</button><button id="action-discard" type="button" disabled>Discard changes</button><button id="action-copy" type="button">Save as new action</button><button id="action-add-to-plan" type="button" disabled>+ Add to routine</button></div>
-          <div class="action-maintenance"><button id="action-reset" type="button" class="subtle" hidden>Restore built-in default</button><button id="action-delete" type="button" class="delete-button" hidden>Delete action</button><p id="action-save-hint" class="caption">Saving never starts movement. Run requires arming.</p></div>
+          <div class="sequence-inspector">
+            <div class="keyframe-preview"><div class="keyframe-preview-heading"><div><h3>Pose canvas</h3><p class="caption">Side view of each leg. Click an outlined joint to edit the selected frame.</p></div><span id="action-canvas-state" class="tag">EDITING FRAME 1</span></div><svg id="action-pose-preview" viewBox="0 0 680 190" role="group" aria-label="Interactive keyframe servo joints"></svg></div>
+            <div class="sequence-frame-inspector"><div id="selected-joint-editor" class="selected-joint-editor"><div><strong id="selected-joint-name">Select a joint on the canvas</strong><p id="selected-joint-detail" class="caption">Outlined nodes are servo pivots. Solid feet are endpoints.</p></div><div class="selected-joint-inputs"><label>Joint angle<input id="selected-joint-slider" type="range" min="-90" max="90" step="0.1" disabled></label><label>Degrees<div class="keyframe-unit"><input id="selected-joint-angle" type="number" step="any" disabled><span>°</span></div></label></div></div>
+              <div class="keyframe-transition"><label>Transition speed into this frame<div class="keyframe-unit"><input id="frame-speed" type="number" min="1" max="144" step="any" required><span>°/s</span></div></label><label>Hold at this frame<div class="keyframe-unit"><input id="frame-hold" type="number" min="0" max="30" step="any" required><span>seconds</span></div></label></div><p id="frame-timing-detail" class="caption"></p><p id="action-budget-hint" class="caption"></p>
+            </div>
+          </div>
+          <details id="action-angle-details" class="sequence-details"><summary>All 12 servo angles</summary><div class="sequence-details-body"><div id="frame-angles" class="keyframe-leg-grid"></div><label class="preview-scrubber">Scrub between frame positions<input id="action-scrub" type="range" min="0" max="0" step="0.01" value="0"></label><p class="caption keyframe-position-note">Angles are logical servo commands, without position feedback. The robot’s first physical pose is unknown after restart.</p></div></details>
+          <details id="action-metadata-details" class="sequence-details"><summary>Action name, description &amp; playback</summary><div class="sequence-details-body"><div class="action-metadata"><label>Action name<input id="action-name" maxlength="64" required placeholder="my greeting"></label><label>Playback<select id="action-playback"><option value="keyframes">Complete each keyframe</option><option value="continuous">Continuous sampled path</option></select></label></div><label>Description<textarea id="action-description" maxlength="2000" rows="2" placeholder="What this action should do"></textarea></label><p id="action-playback-help" class="caption"></p></div></details>
+          <div class="action-save-row"><button id="action-discard" type="button" disabled>Discard changes</button><button id="action-add-to-plan" type="button" disabled>+ Add to routine</button></div>
+          <div class="action-maintenance"><button id="action-reset" type="button" class="subtle" hidden>Restore built-in default</button><button id="action-delete" type="button" class="delete-button" hidden>Delete action</button><p id="action-save-hint" class="caption">Saving never starts movement.</p></div>
         </form>
       </article>
     </div>`;
   const $ = id => root.querySelector(`#${id}`);
   let actions = [], draft = null, baseline = null, selectedName = null, selectedFrame = 0, selectedJoint = null;
-  let dirty = false, saving = false, previewTimer = null, previewFrame = 0, previewStarted = 0;
+  let dirty = false, saving = false, previewTimer = null, previewStarted = 0, previewTime = 0, previewLoop = false, dragFrame = null;
+  let timing = {duration: 0, frames: [], valid: false};
   let maxFrames = 128, previewAngles = null, previewWidth = 0;
   const angleInputs = [];
   for (let leg = 0; leg < 4; leg++) {
@@ -53,7 +59,7 @@ export function initActionsEditor({root, call, getStatus, onChanged, onAddToPlan
     $('frame-angles').append(fieldset);
   }
   function message(text, kind = '') { $('action-notice').textContent = text; $('action-notice').className = `notice ${kind}`; $('action-notice').hidden = !text; }
-  function stopPreview() { clearInterval(previewTimer); previewTimer = null; $('action-preview').textContent = '▶ Preview sequence'; }
+  function stopPreview() { clearInterval(previewTimer); previewTimer = null; $('action-preview').textContent = '▶ Preview'; }
   function validation() {
     if (!draft) return 'Choose an action or create a new one.';
     if (!/^[a-z0-9][a-z0-9 _-]{0,63}$/.test(draft.name) || draft.name.includes('  ') || ['stop','arm','halt'].includes(draft.name)) return 'Use an action name of 1–64 lowercase letters, numbers, spaces, underscores or hyphens; stop, arm and halt are reserved.';
@@ -95,13 +101,18 @@ export function initActionsEditor({root, call, getStatus, onChanged, onAddToPlan
     $('action-validation').textContent = dirty ? error : '';
     $('action-new').disabled = editingLocked || (!finitePose(robot.servo_angles) && !actions.some(a => a.name === 'stand'));
     $('action-copy').disabled = editingLocked || !draft;
+    $('frame-previous').disabled = editingLocked || !draft || selectedFrame === 0;
+    $('frame-next').disabled = editingLocked || !draft || selectedFrame >= count - 1;
+    $('action-rewind').disabled = editingLocked || !timing.valid;
+    $('action-loop').disabled = editingLocked || !timing.valid;
+    $('action-time-scrub').disabled = editingLocked || !timing.valid || timing.duration <= 0;
     $('frame-add').disabled = editingLocked || !draft || count >= maxFrames;
     $('frame-duplicate').disabled = editingLocked || !draft || count >= maxFrames;
     $('frame-left').disabled = editingLocked || !draft || selectedFrame === 0;
     $('frame-right').disabled = editingLocked || !draft || selectedFrame >= count - 1;
     $('frame-remove').disabled = editingLocked || !draft || count <= 1;
     $('frame-capture').disabled = editingLocked || !draft || blocked || !finitePose(robot.servo_angles);
-    $('action-preview').disabled = editingLocked || !draft || count < 2 || draft.frames.some(f => !finitePose(f.angles) || !Number.isFinite(f.speed_deg_s) || f.speed_deg_s <= 0 || !Number.isFinite(f.hold_seconds));
+    $('action-preview').disabled = editingLocked || !draft || !timing.valid || timing.duration <= 0;
     $('action-scrub').disabled = editingLocked || !draft || count < 2;
     $('action-reset').hidden = !baseline?.builtin;
     $('action-reset').disabled = editingLocked || dirty || !baseline?.modified || !known || blocked;
@@ -115,7 +126,7 @@ export function initActionsEditor({root, call, getStatus, onChanged, onAddToPlan
   }
   function drawPose(angles) {
     const svg = $('action-pose-preview'); svg.replaceChildren();
-    if (!finitePose(angles)) return;
+    if (!finitePose(angles)) { previewAngles = null; return; }
     previewAngles = [...angles];
     const columns = svg.clientWidth < 500 ? 2 : 4;
     svg.setAttribute('viewBox', `0 0 ${columns * 170} ${Math.ceil(4 / columns) * 190}`);
@@ -146,7 +157,7 @@ export function initActionsEditor({root, call, getStatus, onChanged, onAddToPlan
   }
   function syncJointEditor(skip = '') {
     const frame = draft?.frames?.[selectedFrame], index = selectedJoint;
-    if (index === null || !frame) { $('selected-joint-name').textContent = 'Select a joint above'; $('selected-joint-detail').textContent = 'The twelve outlined nodes are servo pivots. The solid feet are endpoints.'; $('selected-joint-angle').value = ''; return; }
+    if (index === null || !frame) { $('selected-joint-name').textContent = 'Select a joint on the canvas'; $('selected-joint-detail').textContent = 'Outlined nodes are servo pivots. Solid feet are endpoints.'; $('selected-joint-angle').value = ''; return; }
     const value = frame.angles[index], [low, high] = BOUNDS[index % 3];
     $('selected-joint-name').textContent = `${LEGS[Math.floor(index / 3)]} · ${JOINTS[index % 3]}`;
     $('selected-joint-detail').textContent = `Editing frame ${selectedFrame + 1} · ${low} to ${high}° · save to keep your changes. This does not move the robot.`;
@@ -155,27 +166,94 @@ export function initActionsEditor({root, call, getStatus, onChanged, onAddToPlan
   function selectJoint(index, keyboard = false) {
     if (!draft || saving || playback?.pending) return;
     stopPreview(); selectedJoint = index; $('action-scrub').value = selectedFrame; scrub(selectedFrame); syncJointEditor(); controls();
-    if (keyboard) root.querySelector(`[data-servo="${index}"]`)?.focus();
+    if (keyboard) root.querySelector(`.preview-joint-node[data-servo="${index}"]`)?.focus();
+  }
+  const seconds = value => Number.isFinite(value) ? `${value.toFixed(2)}s` : '—';
+  function revealFrame(index) {
+    const strip = root.querySelector('.filmstrip-scroll'), card = root.querySelector(`.keyframe-card[data-frame="${index}"]`);
+    if (!strip?.clientWidth || !card) return;
+    const left = card.getBoundingClientRect().left - strip.getBoundingClientRect().left + strip.scrollLeft;
+    const right = left + card.getBoundingClientRect().width, margin = 8;
+    if (left < strip.scrollLeft + margin) strip.scrollLeft = Math.max(0, left - margin);
+    else if (right > strip.scrollLeft + strip.clientWidth - margin) strip.scrollLeft = right - strip.clientWidth + margin;
+  }
+  function followPlayhead(position) {
+    if (!previewTimer) return;
+    const strip = root.querySelector('.filmstrip-scroll'); if (!strip?.clientWidth) return;
+    const margin = Math.min(40, strip.clientWidth / 4);
+    if (position > strip.scrollLeft + strip.clientWidth - margin) strip.scrollLeft = position - strip.clientWidth * .65;
+    else if (position < strip.scrollLeft + margin) strip.scrollLeft = Math.max(0, position - strip.clientWidth * .35);
+  }
+  function showTime(value) {
+    if (!draft || !timing.valid) return;
+    const sample = sampleSequence(draft.frames, timing, value); previewTime = sample.time;
+    if (finitePose(sample.angles)) drawPose(sample.angles);
+    $('action-time-scrub').value = sample.time; $('action-scrub').value = sample.position;
+    $('action-preview-time').textContent = `${sample.time.toFixed(2)} / ${timing.duration.toFixed(2)} s`;
+    $('action-preview-detail').textContent = `${sample.phase === 'hold' ? 'Hold at' : sample.phase === 'complete' ? 'End at' : 'Moving toward'} frame ${sample.frame + 1} · first pose starts at 0s; initial approach is unknown. Power limits can slow the robot. Frames are shown at equal spacing.`;
+    $('action-canvas-state').textContent = Math.abs(sample.position - selectedFrame) < .0001 ? `EDITING FRAME ${selectedFrame + 1}` : `PREVIEW · FRAME ${(sample.position + 1).toFixed(2)}`;
+    for (const card of root.querySelectorAll('.keyframe-card')) card.classList.toggle('is-previewing', Number(card.dataset.frame) === sample.frame);
+    const first = $('action-timeline').firstElementChild, width = first?.getBoundingClientRect().width || 144;
+    const cursor = sample.position * (width + 10) + width / 2;
+    $('action-playhead').style.left = `${cursor}px`; followPlayhead(cursor);
   }
   function scrub(value) {
     if (!draft?.frames.length) return;
     const low = Math.min(draft.frames.length - 1, Math.floor(value)), high = Math.min(draft.frames.length - 1, low + 1), weight = value - low;
-    const a = draft.frames[low].angles, b = draft.frames[high].angles;
-    if (finitePose(a) && finitePose(b)) drawPose(a.map((v, i) => v + (b[i] - v) * weight));
-    $('action-preview-detail').textContent = `Preview frame ${(value + 1).toFixed(weight ? 2 : 0)} of ${draft.frames.length}. Commanded angles only; actual motion follows power limits and the selected joint order.`;
+    if (weight > 0) { if (timing.valid) showTime(timing.frames[low].departure + timing.frames[high].transition * weight); return; }
+    if (timing.valid) showTime(timing.frames[low].arrival);
+    // Several zero-time frames may share an arrival. Explicit frame selection
+    // always shows that frame, while timed playback advances instant boundaries.
+    drawPose(draft.frames[low].angles); $('action-scrub').value = low;
+    $('action-canvas-state').textContent = low === selectedFrame ? `EDITING FRAME ${low + 1}` : `PREVIEW · FRAME ${low + 1}`;
+    const first = $('action-timeline').firstElementChild, width = first?.getBoundingClientRect().width || 144;
+    $('action-playhead').style.left = `${low * (width + 10) + width / 2}px`;
+    for (const card of root.querySelectorAll('.keyframe-card')) card.classList.toggle('is-previewing', Number(card.dataset.frame) === low);
+    $('action-preview-detail').textContent = `Selected frame ${low + 1}${timing.valid ? ` at ${seconds(timing.frames[low].arrival)}` : ''}. Preview starts at the first saved pose; initial approach and power-budget delays are not included.`;
+  }
+  function selectFrame(index, focus = false) {
+    if (!draft || index < 0 || index >= draft.frames.length || saving || playback?.pending) return;
+    stopPreview(); selectedFrame = index; renderSelected();
+    if (focus) root.querySelector(`[data-frame="${index}"]`)?.focus({preventScroll: true});
+  }
+  function moveFrame(from, to) {
+    if (!draft || saving || playback?.pending || from === to || from < 0 || to < 0 || from >= draft.frames.length || to >= draft.frames.length) return;
+    const [frame] = draft.frames.splice(from, 1); draft.frames.splice(to, 0, frame); selectedFrame = to; changed(); renderSelected();
+    message(`Frame moved to position ${to + 1}. Save to keep this sequence.`);
   }
   function renderTimeline() {
-    $('action-timeline').replaceChildren();
+    timing = sequenceTiming(draft?.frames || []);
+    if (!timing.valid) { drawPose(null); $('action-preview-time').textContent = 'Check frame values'; }
+    $('action-timeline').replaceChildren(); $('action-ruler').replaceChildren();
     for (const [index, frame] of (draft?.frames || []).entries()) {
       const item = document.createElement('div'); item.setAttribute('role', 'listitem');
-      const button = document.createElement('button'); button.type = 'button'; button.className = 'keyframe-card'; button.dataset.frame = index;
+      const button = document.createElement('button'); button.type = 'button'; button.className = 'keyframe-card'; button.dataset.frame = index; button.draggable = true;
       button.setAttribute('aria-label', `Edit keyframe ${index + 1}`); button.setAttribute('aria-pressed', String(index === selectedFrame));
-      const number = document.createElement('strong'); number.textContent = `${index + 1}`;
+      button.title = 'Click to edit. Drag to reorder, or use Alt + Left / Right.';
+      const number = document.createElement('strong'); number.textContent = `FRAME ${index + 1}`;
       const rate = document.createElement('span'); rate.textContent = `${Number.isFinite(frame.speed_deg_s) ? frame.speed_deg_s : '—'}°/s`;
-      const hold = document.createElement('small'); hold.textContent = frame.hold_seconds ? `Hold ${frame.hold_seconds}s` : 'No hold'; button.append(number, rate, hold);
-      button.addEventListener('click', () => { stopPreview(); selectedFrame = index; renderSelected(); }); item.append(button); $('action-timeline').append(item);
+      const hold = document.createElement('small'); hold.textContent = `Hold ${seconds(frame.hold_seconds)}`;
+      const duration = document.createElement('small'); duration.textContent = index ? `Transition ${seconds(timing.frames[index]?.transition)}` : 'First pose';
+      const thumb = createPoseThumbnail(frame.angles); thumb.setAttribute('aria-hidden','true');
+      button.append(number, thumb, rate, hold, duration);
+      button.addEventListener('click', () => selectFrame(index));
+      button.addEventListener('keydown', event => {
+        if (!['ArrowLeft','ArrowRight','Home','End'].includes(event.key)) return;
+        event.preventDefault(); const target = event.key === 'Home' ? 0 : event.key === 'End' ? draft.frames.length - 1 : index + (event.key === 'ArrowLeft' ? -1 : 1);
+        if (event.altKey) { moveFrame(index, target); root.querySelector(`[data-frame="${selectedFrame}"]`)?.focus({preventScroll: true}); } else selectFrame(target, true);
+      });
+      button.addEventListener('dragstart', event => { if (saving || playback?.pending) { event.preventDefault(); return; } dragFrame = index; event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', String(index)); button.classList.add('is-dragging'); });
+      button.addEventListener('dragover', event => { if (dragFrame === null) return; event.preventDefault(); event.dataTransfer.dropEffect = 'move'; button.classList.add('is-drop-target'); });
+      button.addEventListener('dragleave', () => button.classList.remove('is-drop-target'));
+      button.addEventListener('drop', event => { event.preventDefault(); if (dragFrame === null) return; const from = dragFrame; dragFrame = null; moveFrame(from, index); });
+      button.addEventListener('dragend', () => { dragFrame = null; root.querySelectorAll('.is-dragging,.is-drop-target').forEach(node => node.classList.remove('is-dragging','is-drop-target')); });
+      item.append(button); $('action-timeline').append(item);
+      const tick = document.createElement('span'); tick.textContent = seconds(timing.frames[index]?.arrival); $('action-ruler').append(tick);
     }
-    $('action-frame-count').textContent = `${draft?.frames.length || 0} / ${maxFrames} frames`;
+    $('action-frame-count').textContent = `${draft?.frames.length || 0} / ${maxFrames} frames · ${seconds(timing.duration)}`;
+    $('action-time-scrub').max = timing.duration || 0;
+    const frame = timing.frames[selectedFrame];
+    $('frame-timing-detail').textContent = !frame ? '' : selectedFrame === 0 ? `First pose at 0s. Its approach time depends on the robot’s current pose. Hold ${seconds(frame.hold)}.` : `Arrival ${seconds(frame.arrival)} · transition ${seconds(frame.transition)} · hold ${seconds(frame.hold)}.`;
   }
   function renderSelected() {
     const frame = draft?.frames?.[selectedFrame];
@@ -183,14 +261,15 @@ export function initActionsEditor({root, call, getStatus, onChanged, onAddToPlan
     $('frame-speed').value = frame?.speed_deg_s ?? 30; $('frame-hold').value = frame?.hold_seconds ?? 0;
     angleInputs.forEach((input, i) => { input.value = Number.isFinite(frame?.angles[i]) ? Number(frame.angles[i].toFixed(3)) : ''; input.title = Number.isFinite(frame?.angles[i]) ? `Stored command: ${frame.angles[i]}°` : '';  input.disabled = !frame; });
     $('action-scrub').max = Math.max(0, (draft?.frames.length || 1) - 1); $('action-scrub').value = selectedFrame;
-    renderTimeline(); scrub(selectedFrame); syncJointEditor(); controls();
+    renderTimeline(); scrub(selectedFrame); syncJointEditor(); controls(); revealFrame(selectedFrame);
   }
-  function changed(timeline = true) { stopPreview(); dirty = true; message(''); if (timeline) renderTimeline(); scrub(selectedFrame); controls(); }
+  function changed(timeline = true) { stopPreview(); dirty = true; message(''); renderTimeline(); scrub(selectedFrame); controls(); }
   function setDraft(action, name = action?.name || null, isNew = false) {
-    stopPreview(); selectedJoint = null; selectedName = name; baseline = action ? copy(action) : null; draft = action ? copy(action) : null; selectedFrame = 0; dirty = isNew;
+    stopPreview(); transportMessage(''); selectedJoint = null; selectedName = name; baseline = action ? copy(action) : null; draft = action ? copy(action) : null; selectedFrame = 0; previewTime = 0; dirty = isNew;
     $('action-name').value = draft?.name || ''; $('action-name').readOnly = Boolean(name);
     $('action-description').value = draft?.description || ''; $('action-playback').value = draft?.playback || 'keyframes';
-    $('action-editor-title').textContent = name ? title(name) : 'New keyframe action';
+    $('action-editor-title').textContent = title(draft?.name || name) || 'New keyframe action';
+    $('action-metadata-details').open = isNew;
     $('action-origin').textContent = !draft ? 'The action library is unavailable. Refresh the library to try again.' : isNew ? 'New action · save it to make it available to every controller' : draft.builtin ? draft.modified ? 'Built-in action · customized definition' : 'Built-in action · default definition' : 'Custom action · shared motion library';
     renderSelected(); renderLibrary();
   }
@@ -213,9 +292,9 @@ export function initActionsEditor({root, call, getStatus, onChanged, onAddToPlan
     else if (finitePose(robot.servo_angles) && !robot.busy) frames = [{angles: [...robot.servo_angles], speed_deg_s: 30, hold_seconds: 0}];
     else if (seed) frames = [copy(seed.frames[0])];
     if (!frames) return;
-    setDraft({name: '', description: fromSelected ? draft?.description || '' : '', frames, playback: fromSelected ? draft?.playback || 'keyframes' : 'keyframes', builtin: false, modified: false}, null, true);
-    message(fromSelected ? 'Copied keyframes into a new action. Choose a unique name and save.' : finitePose(robot.servo_angles) && !robot.busy ? 'New action starts from the current commanded servo positions.' : 'New action starts from the saved Stand keyframe, not a measured physical pose.');
-    $('action-name').focus();
+    setDraft({name: fromSelected ? uniqueActionName(seed?.name || 'action', actions.map(a => a.name)) : '', description: fromSelected ? draft?.description || '' : '', frames, playback: fromSelected ? draft?.playback || 'keyframes' : 'keyframes', builtin: false, modified: false}, null, true);
+    message(fromSelected ? `Duplicated all keyframes as “${draft.name}”. This is an unsaved copy; the original is unchanged.` : finitePose(robot.servo_angles) && !robot.busy ? 'New action starts from the current commanded servo positions.' : 'New action starts from the saved Stand keyframe, not a measured physical pose.');
+    if (!fromSelected) $('action-name').focus();
   }
   async function publish(action) {
     const index = actions.findIndex(a => a.name === action.name); if (index < 0) actions.push(copy(action)); else actions[index] = copy(action);
@@ -231,28 +310,29 @@ export function initActionsEditor({root, call, getStatus, onChanged, onAddToPlan
   $('action-search').addEventListener('input', renderLibrary);
   $('action-new').addEventListener('click', () => freshAction());
   $('action-copy').addEventListener('click', () => freshAction(true));
-  $('action-name').addEventListener('input', () => { if (draft) { draft.name = $('action-name').value.trim().toLowerCase(); changed(false); } });
+  $('action-name').addEventListener('input', () => { if (draft) { draft.name = $('action-name').value.trim().toLowerCase(); $('action-editor-title').textContent = title(draft.name); changed(false); } });
   $('action-description').addEventListener('input', () => { if (draft) { draft.description = $('action-description').value; changed(false); } });
   $('action-playback').addEventListener('change', () => { if (draft) { draft.playback = $('action-playback').value; changed(false); } });
   for (const [id, field] of [['frame-speed', 'speed_deg_s'], ['frame-hold', 'hold_seconds']]) $(id).addEventListener('input', () => { if (draft) { draft.frames[selectedFrame][field] = $(id).value === '' ? NaN : Number($(id).value); changed(); } });
   for (const id of ['frame-add', 'frame-duplicate']) $(id).addEventListener('click', () => { if (!draft || draft.frames.length >= maxFrames) return; draft.frames.splice(selectedFrame + 1, 0, copy(draft.frames[selectedFrame])); selectedFrame++; changed(); renderSelected(); });
-  for (const [id, delta] of [['frame-left', -1], ['frame-right', 1]]) $(id).addEventListener('click', () => { const next = selectedFrame + delta; if (!draft || next < 0 || next >= draft.frames.length) return; [draft.frames[selectedFrame], draft.frames[next]] = [draft.frames[next], draft.frames[selectedFrame]]; selectedFrame = next; changed(); renderSelected(); });
+  for (const [id, delta] of [['frame-left', -1], ['frame-right', 1]]) $(id).addEventListener('click', () => moveFrame(selectedFrame, selectedFrame + delta));
+  for (const [id, delta] of [['frame-previous', -1], ['frame-next', 1]]) $(id).addEventListener('click', () => selectFrame(selectedFrame + delta));
   $('frame-remove').addEventListener('click', () => { if (!draft || draft.frames.length <= 1) return; draft.frames.splice(selectedFrame, 1); selectedFrame = Math.min(selectedFrame, draft.frames.length - 1); changed(); renderSelected(); });
   $('frame-capture').addEventListener('click', () => { const robot = getStatus() || {}; if (draft && finitePose(robot.servo_angles) && !robot.busy) { draft.frames[selectedFrame].angles = [...robot.servo_angles]; changed(); renderSelected(); message('Current commanded angles copied into this frame. Save to keep them.'); } });
   $('action-scrub').addEventListener('input', () => { stopPreview(); scrub(Number($('action-scrub').value)); });
+  $('action-time-scrub').addEventListener('input', () => { stopPreview(); showTime(Number($('action-time-scrub').value)); });
+  $('action-rewind').addEventListener('click', () => selectFrame(0));
+  $('action-loop').addEventListener('click', () => { previewLoop = !previewLoop; $('action-loop').setAttribute('aria-pressed',String(previewLoop)); });
   $('action-preview').addEventListener('click', () => {
     if (previewTimer) { stopPreview(); return; }
-    if (!draft || draft.frames.length < 2) return;
-    previewFrame = 0; previewStarted = performance.now(); $('action-preview').textContent = '■ Stop preview'; scrub(0);
+    if (!draft || !timing.valid || timing.duration <= 0) return;
+    if (previewTime >= timing.duration) previewTime = 0;
+    previewStarted = performance.now() - previewTime * 1000; $('action-preview').textContent = 'Ⅱ Pause';
     previewTimer = setInterval(() => {
       if (document.hidden || root.closest('[hidden]')) { stopPreview(); return; }
-      const a = draft.frames[previewFrame], b = draft.frames[previewFrame + 1];
-      if (!b) { stopPreview(); return; }
-      const duration = Math.max(.05, Math.max(...a.angles.map((v, i) => Math.abs(v - b.angles[i]))) / b.speed_deg_s);
       const elapsed = (performance.now() - previewStarted) / 1000;
-      const weight = Math.max(0, Math.min(1, (elapsed - a.hold_seconds) / duration));
-      $('action-scrub').value = previewFrame + weight; scrub(previewFrame + weight);
-      if (weight === 1) { previewFrame++; previewStarted = performance.now(); if (previewFrame === draft.frames.length - 1) stopPreview(); }
+      if (elapsed >= timing.duration && previewLoop) { previewStarted = performance.now() - (elapsed % timing.duration) * 1000; showTime(elapsed % timing.duration); }
+      else { showTime(Math.min(elapsed, timing.duration)); if (elapsed >= timing.duration) stopPreview(); }
     }, 100);
   });
   document.addEventListener('visibilitychange', () => { if (document.hidden) stopPreview(); });
@@ -268,7 +348,7 @@ export function initActionsEditor({root, call, getStatus, onChanged, onAddToPlan
   });
   function transportMessage(text, kind = '') { $('action-transport-notice').textContent = text; $('action-transport-notice').className = `notice ${kind}`; $('action-transport-notice').hidden = !text; }
   $('action-run').addEventListener('click', async () => { controls(); if ($('action-run').disabled) return; stopPreview(); transportMessage(''); try { await playback.play('move', {name: selectedName, speed: 80, steps: 1}); transportMessage('Saved action started. Keep this controller connected.'); } catch (error) { transportMessage(error.message, 'error'); } finally { controls(); } });
-  $('action-stop').addEventListener('click', async () => { if ($('action-stop').disabled) return; transportMessage(''); try { await playback.stop(); transportMessage('Robot stopped and motion disarmed.'); } catch (error) { transportMessage(error.message, 'error'); } finally { controls(); } });
+  $('action-stop').addEventListener('click', async () => { if ($('action-stop').disabled) return; stopPreview(); transportMessage(''); try { await playback.stop(); transportMessage('Robot stopped and motion disarmed.'); } catch (error) { transportMessage(error.message, 'error'); } finally { controls(); } });
   $('action-add-to-plan').addEventListener('click', () => { if (selectedName && !dirty) onAddToPlan?.(selectedName); });
   $('action-reset').addEventListener('click', async () => { controls(); if ($('action-reset').disabled) return; saving = true; controls(); try { await publish(await call('action_reset', {name: selectedName, ...(getStatus()?.armed ? {disarm: true} : {})})); message('Built-in action restored.'); } catch (error) { message(error.message, 'error'); } finally { saving = false; controls(); } });
   $('action-delete').addEventListener('click', async () => { controls(); if ($('action-delete').disabled) return; saving = true; controls(); try { await call('action_delete', {name: selectedName}); actions = actions.filter(a => a.name !== selectedName); setDraft(actions.find(a => a.name === 'stand') || actions[0] || null); await onChanged?.(copy(actions)); message('Custom action deleted.'); } catch (error) { message(error.message, 'error'); } finally { saving = false; controls(); } });
