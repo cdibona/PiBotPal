@@ -1,0 +1,16 @@
+[Unit]
+Description=PiBotPal CPU power-saving frequency ceiling
+After=systemd-modules-load.service
+Before=multi-user.target
+ConditionPathExists=/sys/devices/system/cpu/cpufreq/policy0/scaling_max_freq
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I /usr/local/libexec/pibotpal-cpu-limit.py --max-khz 1500000
+RemainAfterExit=yes
+NoNewPrivileges=yes
+ProtectHome=yes
+PrivateTmp=yes
+
+[Install]
+WantedBy=multi-user.target
