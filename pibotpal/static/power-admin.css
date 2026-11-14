@@ -1,0 +1,57 @@
+/* SPDX-License-Identifier: MIT */
+.hardware-power-card { margin-bottom: 28px; }
+.hardware-power-card > .panel-heading { align-items: center; padding: 18px 20px; gap: 20px; }
+.hardware-power-card > .panel-heading h2 { font-size: 18px; }
+.hardware-power-card > .panel-heading p { margin-top: 5px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.hardware-power-card .outline { font-size: 13px; flex-shrink: 0; }
+.hardware-power-card > .notice { margin: 16px 20px 0; font-size: 13px; }
+.hardware-power-card.has-power-warning { border-color: var(--danger-border); }
+.hardware-power-telemetry { display: grid; grid-template-columns: 1fr 1fr; padding: 20px; gap: 26px; border-bottom: 1px solid var(--line); }
+.power-host-summary, .power-health-summary { min-width: 0; }
+.power-host-summary { padding-right: 26px; border-right: 1px solid var(--line); }
+.power-host-title { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.power-host-title h3, .power-health-summary h3, .servo-power-title h3 { font-size: 15px; font-weight: 600; }
+.power-host-values { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 18px 0 16px; gap: 18px 16px; }
+.power-host-values div { min-width: 0; }
+.power-host-values dt { color: var(--muted); font-size: 12px; }
+.power-host-values dd { margin: 5px 0 0; font-size: 17px; font-weight: 550; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.power-caption { color: var(--muted); font-size: 12px; line-height: 1.65; }
+.power-health-table { margin: 14px 0 16px; }
+.power-health-table > div { display: grid; grid-template-columns: 1.2fr 1fr 1.2fr; align-items: center; gap: 14px; padding: 12px 0; border-bottom: 1px solid var(--line); font-size: 13px; }
+.power-health-table > .power-health-head { padding-top: 0; color: var(--muted); font-size: 12px; }
+.power-health-table strong { font-weight: 500; font-size: 13px; }
+.power-health-table [data-flag="active"] { color: var(--red); }
+.power-health-table [data-flag="history"] { color: var(--orange); }
+.power-health-table [data-flag="clear"] { color: var(--teal); }
+.power-health-table [data-flag="unknown"] { color: var(--muted); }
+.power-host-error { color: var(--orange); font-size: 12px; line-height: 1.65; margin: 0 0 12px; overflow-wrap: anywhere; }
+.servo-power-form { padding: 20px; }
+.servo-power-title { display: flex; align-items: center; justify-content: space-between; gap: 15px; }
+.servo-power-title p { margin-top: 5px; color: var(--muted); font-size: 13px; line-height: 1.65; }
+.servo-power-title .tag { flex-shrink: 0; }
+.servo-power-fields { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 18px; margin: 22px 0; }
+.servo-power-fields > label { display: flex; flex-direction: column; gap: 8px; color: var(--text); font-size: 13px; min-width: 0; }
+.power-input-unit { position: relative; }
+.power-input-unit input { width: 100%; padding: 10px 65px 10px 12px; font-size: 15px; font-variant-numeric: tabular-nums; appearance: textfield; -moz-appearance: textfield; }
+.power-input-unit input::-webkit-inner-spin-button, .power-input-unit input::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+.power-input-unit span { position: absolute; right: 12px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 12px; pointer-events: none; }
+.servo-power-fields small { color: var(--muted); font-size: 12px; line-height: 1.6; }
+.servo-power-actions { display: flex; align-items: center; gap: 10px 15px; flex-wrap: wrap; }
+.servo-power-actions button, .servo-power-actions .primary { width: auto; margin: 0; font-size: 13px; padding: 9px 13px; }
+.servo-power-actions p { flex: 1 1 260px; color: var(--muted); font-size: 12px; line-height: 1.65; }
+.servo-power-note { margin-top: 18px; padding: 14px 16px; border: 1px solid var(--line); border-radius: 7px; background: var(--panel-2); color: var(--muted); font-size: 12px; line-height: 1.7; }
+@media (max-width: 1200px) { .servo-power-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px 24px; } .power-host-values { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 780px) {
+  .hardware-power-card > .panel-heading { align-items: flex-start; flex-direction: column; padding: 17px; gap: 14px; }
+  .hardware-power-card > .panel-heading h2 { font-size: 17px; }
+  .hardware-power-card > .notice { margin: 16px 17px 0; }
+  .hardware-power-telemetry { grid-template-columns: 1fr; gap: 22px; padding: 17px; }
+  .power-host-summary { padding: 0 0 20px; border-right: 0; border-bottom: 1px solid var(--line); }
+  .power-host-values { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .power-host-values dd { font-size: 16px; }
+  .servo-power-form { padding: 17px; }
+  .servo-power-title { align-items: flex-start; flex-direction: column; gap: 10px; }
+  .servo-power-fields { gap: 18px 15px; }
+  .servo-power-note { padding: 12px; }
+}
+@media (max-width: 420px) { .power-host-values { grid-template-columns: repeat(2, minmax(0, 1fr)); } .servo-power-fields { grid-template-columns: 1fr; } .power-health-table > div { gap: 10px; } }

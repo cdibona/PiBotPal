@@ -13,7 +13,7 @@ python3 -m venv --system-site-packages .venv
 
 Requires Raspberry Pi OS `python3-libcamera`, NumPy, Pillow, `libasound2t64`, and the Flite shared libraries (`libflite1`). Install Python requirements below; system site packages expose the Pi's camera bindings. PiBotPal controls the Robot HAT directly using MIT-licensed python-periphery. It does not import `picrawler`, `robot_hat`, Picamera2, OpenCV, or python-prctl, and does not invoke FFmpeg, eSpeak, arecord, or aplay. No Node or runtime CDN is needed. Optional QR decoding uses `zxing-cpp` (Apache-2.0), installed with `.venv/bin/pip install -r requirements-vision.txt`; it is installed on this robot. Face detection is currently unavailable.
 
-Install the persistent user service and Tailscale HTTPS proxy with `scripts/install-service.sh`. It starts at boot via user lingering, binds only `127.0.0.1:8765`, and restarts on failure. It starts disarmed and microphone-muted. The camera starts for monitoring. Tailnet access rules determine who can reach the robot; this service trusts connections from Tailscale Serve and local processes. Do not expose the backend publicly.
+Install the persistent user service and Tailscale HTTPS proxy with `scripts/install-service.sh`. It starts at boot via user lingering, binds only `127.0.0.1:8765`, and restarts on failure. It starts disarmed and microphone-muted. Cameras resume their saved on/off preferences; newly discovered cameras start for monitoring. Tailnet access rules determine who can reach the robot; this service trusts connections from Tailscale Serve and local processes. Do not expose the backend publicly.
 
 - Dashboard: https://spiderbot.tail689a35.ts.net/
 - MCP: https://spiderbot.tail689a35.ts.net/mcp
@@ -46,15 +46,28 @@ Camera frames and audio use separate media URLs for efficient streaming; their c
 
 ## Motion timing
 
-Joint motion runs on a shared 50 Hz timeline at a rate proportional to requested
-speed, rather than a fixed delay for every pose or path sample. Unchanged poses
-return immediately. Single-pose moves ease in and out; gait samples stream
-continuously with rounded foot swings and gradual body transfers. Late frames
-are skipped instead of sending stale updates in a burst. The HAT uses a 50 Hz
+Joint motion runs at 50 Hz with a shared commanded-motion budget. By default,
+only one leg's group of up to three servos changes at once, with a limit of
+30 degrees/second per servo, 60 degrees/second summed across the group, and
+80 ms settling between different groups. Requested speed can lower these rates
+but cannot exceed the budget. Consecutive gait samples for the same group stream
+continuously; body transfers are staggered across legs. Scheduler stalls extend
+the movement instead of producing catch-up jumps. Unchanged poses return
+immediately. The HAT uses a 50 Hz
 PWM period with one-microsecond pulse resolution (about 0.09 degrees), and
 unchanged pulse values do not generate redundant bus writes. Startup/arming
 remain free of PWM writes; the first explicit full-pose command still starts
-from an unknown physical position because the servos have no encoders.
+from an unknown physical position because the servos have no encoders. Unknown
+joints are initialized in separate groups with at least one second of settling
+after each group, including the last. That delay cannot confirm physical arrival
+or rate-limit an unknown initial position.
+
+Change the limits in **Admin → Hardware → Power & motion budget** while disarmed and
+idle. Settings persist in `servo-power.json` (0600) and apply to web, native,
+MCP, controller, testing, and plan movements through the shared controller.
+This is a concurrency/travel-rate budget, not a measured amperage or wattage
+limit. Holding servos still consume power; software STOP holds their last PWM
+commands. Staggering changes gait timing and needs physical balance checks.
 
 ## Geometry and limits
 
@@ -94,6 +107,35 @@ The shared MCP API adds `admin_get`, `admin_save_provider`, `admin_delete_provid
 ## Power monitoring
 
 The dashboard has a dedicated power panel. `get_status.power` reports powered state, measured voltage, sample timestamp/freshness, and source. The Robot HAT exposes battery voltage, but this installation has no charging-state, external-power, current-draw, or capacity telemetry. Charging and estimated runtime are therefore unknown; no charge percentage is invented. There is no automatic sleep/suspend/shutdown policy. The 15-second control heartbeat disarms motion and mutes audio; it does not power down the Pi or servos.
+
+**Admin → Hardware** also shows the Pi CPU ceiling, current frequency,
+temperature, and current/historical undervoltage and throttling flags.
+`power_get` reads this telemetry and the servo budget; `servo_power_set` saves
+the four budget limits while disarmed and idle. Pi firmware flags are sampled
+once per second. Current undervoltage blocks arming; a detected new undervoltage
+event stops and disarms motion. Historical flags already present at server
+startup are shown separately. This sampled protection cannot prevent every
+brief voltage dip and is not a current sensor or hardware cutoff.
+
+This Pi's CPU ceiling is reduced from 2.4 GHz to **1.5 GHz** by the root-owned
+`pibotpal-cpu-limit.service`. The cap is independent of the robot server and
+persists across boot without changing voltage or the CPU governor. Install it
+on a compatible Pi with:
+
+```sh
+sudo install -Dm755 scripts/cpu-limit.py /usr/local/libexec/pibotpal-cpu-limit.py
+sudo install -m644 scripts/pibotpal-cpu-limit.service /etc/systemd/system/pibotpal-cpu-limit.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now pibotpal-cpu-limit.service
+```
+
+The helper validates the cap against the host's supported frequencies before
+writing it. To remove this ceiling on this Pi 5, disable the unit with
+`sudo systemctl disable --now pibotpal-cpu-limit.service`, then restore the
+supported maximum with
+`sudo /usr/bin/python3 -I /usr/local/libexec/pibotpal-cpu-limit.py --max-khz 2400000`.
+Other hosts may have different supported limits. CPU settings are read-only
+in the web interface.
 
 API references: [Ollama chat](https://docs.ollama.com/api/chat), [Ollama model discovery](https://docs.ollama.com/api/tags), [OpenAI Chat Completions](https://developers.openai.com/api/reference/resources/chat/subresources/completions/methods/create).
 
@@ -199,11 +241,19 @@ using the deterministic parser/executor offline for simple routines.
 
 The dashboard shows the selected primary camera and additional CSI feeds at the
 same time. [Admin → Cameras](https://spiderbot.tail689a35.ts.net/#admin/cameras)
-provides independent start/stop, previews, snapshots, resolution selection, and primary selection.
+provides independent on/off switches, **Turn all off**, previews, snapshots,
+resolution selection, and primary selection. Turning a camera off releases its
+capture pipeline and stops frame processing; it does not switch a physical
+power rail. Each camera's choice persists across server restarts. Changing the
+resolution of an off camera leaves it off, and stopping the server preserves
+the saved preferences.
 Stable camera IDs derive from the physical libcamera sensor ID, rather than
-array order. This robot currently detects an IMX477 and an OV5647. New cameras start at
-640×480/12 fps; the OV5647 remains the initial primary for compatibility. Primary
-selection and per-camera resolutions persist in `cameras.json` (0600). A shared request dispatcher
+array order. IMX477 and OV5647 simultaneous capture has been tested on this
+robot; only the IMX477 is enumerated by Linux on the latest boot. An absent
+sensor cannot be turned on by the dashboard. New cameras start at
+640×480/12 fps; the OV5647 is preferred as initial primary when present. Primary
+selection, on/off preferences, and per-camera resolutions persist in
+`cameras.json` (0600). A shared request dispatcher
 routes the process-wide libcamera completion queue to each camera, allowing
 simultaneous capture without one stream consuming the other's requests.
 

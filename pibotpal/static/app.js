@@ -117,6 +117,13 @@ function render(state){
   $('power-voltage').textContent=powerValid?power.voltage.toFixed(2):'—';
   $('power-detail').textContent=powerValid?`Measured supply · ${power.source||'Robot HAT ADC'}`:power.error||'Supply voltage unavailable';
   $('power-state').textContent=power.powered===true?'POWERED':'POWER STATE UNKNOWN';$('power-state').className=`tag ${power.powered===true?'teal':''}`;
+  const piPower=power.pi||{},servoBudget=state.servo_budget||{};
+  if(piPower.under_voltage===true){$('power-state').textContent='LOW VOLTAGE';$('power-state').className='tag red';$('power-detail').textContent='Pi undervoltage detected';}
+  else if(piPower.under_voltage_occurred===true){$('power-state').textContent='PAST LOW VOLTAGE';$('power-state').className='tag orange';}
+  const budgetDetails=[];
+  if(Number.isFinite(piPower.cpu?.max_mhz))budgetDetails.push(`CPU cap ${(piPower.cpu.max_mhz/1000).toFixed(1)} GHz`);
+  if(Number.isFinite(servoBudget.max_active_servos))budgetDetails.push(`Servo limit ${servoBudget.max_active_servos} at a time`);
+  if(budgetDetails.length)$('power-detail').textContent+=' · '+budgetDetails.join(' · ');
   $('power-charging').textContent=power.charging===true?'Charging':power.charging===false?'Not charging':'Unknown';
   $('power-external').textContent=power.external_power===true?'Connected':power.external_power===false?'Disconnected':'Unknown';
   $('power-runtime').textContent=Number.isFinite(power.estimated_runtime_minutes)?`About ${Math.round(power.estimated_runtime_minutes)} min`:'Not calibrated';

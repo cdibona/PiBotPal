@@ -1,10 +1,12 @@
 // SPDX-License-Identifier: MIT
 import {initControllers} from './controllers-ui.js';
+import {initPowerAdmin} from './power-admin.js';
 const $ = id => document.getElementById(id);
 const optionLabel = key => key.replaceAll('_', ' ').replace(/^./, c => c.toUpperCase());
 const expansionDevices = new Set(['rear_camera', 'lidar', 'coral', 'imu']);
 
 export function initHardware({call}) {
+  const power = initPowerAdmin({call, root: $('admin-hardware')});
   const section = document.createElement('section');
   section.className = 'hardware-admin';
   section.setAttribute('aria-labelledby', 'hardware-title');
@@ -104,7 +106,7 @@ export function initHardware({call}) {
   }
   async function refresh() {
     if (loading) return; loading = true;
-    try { render(await call('hardware_get')); }
+    try { await Promise.all([call('hardware_get').then(render), power.refresh()]); }
     catch (error) { message(error.message, 'error'); }
     finally { loading = false; }
   }
@@ -112,6 +114,6 @@ export function initHardware({call}) {
   return {
     refresh,
     refreshControllers: controllers.refresh,
-    setActive(name) { controllers.setActive(name === 'controllers'); if (name === 'hardware') refresh(); },
+    setActive(name) { controllers.setActive(name === 'controllers'); power.setActive(name === 'hardware'); if (name === 'hardware') refresh(); },
   };
 }
