@@ -6,9 +6,10 @@ const sizeLabel = size => `${size.width} × ${size.height}`;
 
 export function initCameraViews({call, notice, CameraFeed, getStatus}) {
   const dashboard = new Map(), previews = new Map(), drafts = new Map();
-  let cameras = [], primary = null, signature = '', active = false, online = true, loading = false;
+  let cameras = [], primary = null, signature = '', active = false, online = true, loading = false, batchPending = false;
+  const powerPending = new Set();
   const root = $('admin-cameras');
-  root.innerHTML = `<div class="admin-intro admin-section-intro"><div><h2>Camera streams</h2><p>Choose a resolution for each camera and select the primary view for your apps.</p></div><button id="cameras-refresh" class="outline">Refresh cameras</button></div><p class="caption camera-stream-note">Resolution changes apply to this robot’s live feed and snapshots. Each camera restarts independently; larger frames use more bandwidth.</p><div id="cameras-notice" class="notice" role="status" hidden></div><div id="camera-admin-list" class="camera-admin-grid"></div>`;
+  root.innerHTML = `<div class="admin-intro admin-section-intro"><div><h2>Camera streams</h2><p>Choose a resolution for each camera and select the primary view for your apps.</p></div><div class="admin-actions"><button id="cameras-all-off" class="outline" type="button" disabled>Turn all off</button><button id="cameras-refresh" class="outline">Refresh cameras</button></div></div><p class="caption camera-stream-note">Turn off either camera, or both, to stop capture and image processing. Off stays off after a restart. Resolution changes apply independently; larger frames use more bandwidth.</p><div id="cameras-notice" class="notice" role="status" hidden></div><div id="camera-admin-list" class="camera-admin-grid"></div>`;
 
   function message(text, type = '') {
     $('cameras-notice').textContent = text;
@@ -33,7 +34,7 @@ export function initCameraViews({call, notice, CameraFeed, getStatus}) {
   async function configure(id) {
     const camera = currentCamera(id), draft = modeDraft(camera);
     const selected = modes(camera).find(mode => sizeKey(mode) === draft.value);
-    if (!selected || draft.applying || !draft.dirty) return;
+    if (!selected || draft.applying || !draft.dirty || powerPending.has(id) || batchPending) return;
     draft.applying = true;
     draft.error = false;
     draft.message = `Applying ${sizeLabel(selected)}…`;
@@ -68,6 +69,7 @@ export function initCameraViews({call, notice, CameraFeed, getStatus}) {
     const empty = append('p', stage, 'caption');
     const body = append('div', card, 'panel-body');
     const detail = append('p', body, 'camera-stream-detail');
+    const powerState = append('p', body, 'camera-power-state');
     let resolution, apply, resolutionHint, resolutionStatus;
     if (isAdmin) {
       const form = append('form', body, 'camera-resolution-form');
@@ -92,16 +94,18 @@ export function initCameraViews({call, notice, CameraFeed, getStatus}) {
       form.addEventListener('submit', event => { event.preventDefault(); configure(camera.id); });
     }
     const actions = append('div', body, 'admin-actions camera-actions');
-    const toggle = append('button', actions);
+    const toggle = append('button', actions, 'camera-power-toggle');
     toggle.type = 'button';
     toggle.addEventListener('click', async () => {
-      toggle.disabled = true;
+      if (powerPending.has(camera.id) || batchPending) return;
+      powerPending.add(camera.id);
+      sync();
       try {
         const current = currentCamera(camera.id);
-        await call('camera', {camera_id: camera.id, enabled: !current?.enabled});
+        await call('camera', {camera_id: camera.id, enabled: !current?.enabled}, {timeout: 35000});
         await refresh();
       } catch (error) { message(error.message, 'error'); }
-      finally { toggle.disabled = false; }
+      finally { powerPending.delete(camera.id); sync(); }
     });
     const primaryButton = append('button', actions, '', 'Use as primary');
     primaryButton.type = 'button';
@@ -129,7 +133,7 @@ export function initCameraViews({call, notice, CameraFeed, getStatus}) {
       }
     }, camera.video_url);
     image.addEventListener('error', () => { if (feed.enabled) feed.controller?.abort(); });
-    return {camera, card, feed, badge, toggle, primaryButton, snapshot, detail, values, image, empty, stage, role, isAdmin, resolution, apply, resolutionHint, resolutionStatus};
+    return {camera, card, feed, badge, toggle, primaryButton, snapshot, detail, powerState, values, image, empty, stage, role, isAdmin, resolution, apply, resolutionHint, resolutionStatus};
   }
   async function choose(id) {
     try {
@@ -174,8 +178,9 @@ export function initCameraViews({call, notice, CameraFeed, getStatus}) {
     if (!draft.dirty && !draft.applying) draft.value = sizeKey(camera);
     if (!available.some(mode => sizeKey(mode) === draft.value)) { draft.value = sizeKey(camera); draft.dirty = false; }
     view.resolution.value = draft.value;
-    view.resolution.disabled = draft.applying || !online || !camera.resolutions?.length;
-    view.apply.disabled = draft.applying || !draft.dirty || !online;
+    const switching = powerPending.has(camera.id) || batchPending;
+    view.resolution.disabled = switching || draft.applying || !online || !camera.resolutions?.length;
+    view.apply.disabled = switching || draft.applying || !draft.dirty || !online;
     view.apply.textContent = draft.applying ? 'Applying…' : 'Apply';
     const selected = available.find(mode => sizeKey(mode) === draft.value);
     const hint = [];
@@ -194,10 +199,17 @@ export function initCameraViews({call, notice, CameraFeed, getStatus}) {
         const camera = currentCamera(id);
         if (!camera) continue;
         const draft = modeDraft(camera);
-        view.toggle.textContent = camera.enabled ? 'Stop capture' : 'Start capture';
-        view.toggle.disabled = draft.applying || !online;
+        const switching = powerPending.has(id) || batchPending;
+        view.toggle.textContent = switching ? 'Switching…' : camera.enabled ? 'Turn off' : 'Turn on';
+        view.toggle.dataset.state = camera.enabled ? 'on' : 'off';
+        view.toggle.setAttribute('aria-label', `${label(camera)} camera power: ${camera.enabled ? 'on; turn off' : 'off; turn on'}`);
+        view.toggle.setAttribute('aria-pressed', String(Boolean(camera.enabled)));
+        view.toggle.setAttribute('aria-busy', String(switching));
+        view.toggle.disabled = switching || draft.applying || !online;
+        view.powerState.textContent = camera.enabled ? 'On · capture is running' : camera.enabled_preference === false ? 'Off · stays off after restart' : camera.error ? 'Off · capture could not start' : 'Off · capture is stopped';
+        view.powerState.dataset.state = camera.enabled ? 'on' : 'off';
         view.primaryButton.hidden = id === primary;
-        view.primaryButton.disabled = draft.applying || !online;
+        view.primaryButton.disabled = switching || draft.applying || !online;
         view.role.textContent = id === primary ? 'Primary · used by apps' : 'Additional camera';
         view.detail.textContent = camera.error || `${sizeLabel({width: camera.width || 640, height: camera.height || 480})}${camera.available ? ' · live capture' : camera.timestamp ? ' · last capture' : ' · configured'}${camera.frame_rate ? ` · target ${camera.frame_rate} fps` : ''}`;
         if (camera.available && Number.isFinite(camera.brightness) && camera.brightness < 5) view.detail.textContent += ' · Very dark image: check lens and lighting';
@@ -211,11 +223,13 @@ export function initCameraViews({call, notice, CameraFeed, getStatus}) {
         view.captureSize = captureSize;
         view.feed.setEnabled(Boolean(camera.enabled && visible && online && !draft.applying), instance, camera.video_url);
         if (draft.applying) { view.badge.textContent = 'APPLYING'; view.empty.textContent = 'Applying stream resolution…'; }
-        else if (!camera.enabled) { view.badge.textContent = camera.error ? 'ERROR' : 'OFF'; view.empty.textContent = camera.error || 'Camera capture is off'; }
+        else if (!camera.enabled) { view.badge.textContent = camera.error && camera.enabled_preference !== false ? 'ERROR' : 'OFF'; view.empty.textContent = camera.enabled_preference === false ? 'Camera capture is off' : camera.error || 'Camera capture is off'; }
         if (view.isAdmin) syncResolution(view, camera, draft);
       }
     }
     $('primary-camera').value = primary || '';
+    $('cameras-all-off').disabled = batchPending || powerPending.size > 0 || [...drafts.values()].some(draft => draft.applying) || !online || !cameras.some(camera => camera.enabled || (camera.enabled_preference ?? camera.enabled));
+    $('cameras-all-off').textContent = batchPending ? 'Turning cameras off…' : cameras.length === 2 ? 'Turn both off' : 'Turn all off';
   }
   function update(state) {
     if (Array.isArray(state.cameras)) {
@@ -234,6 +248,28 @@ export function initCameraViews({call, notice, CameraFeed, getStatus}) {
     catch (error) { message(error.message, 'error'); }
     finally { loading = false; }
   }
+  $('cameras-all-off').addEventListener('click', async () => {
+    if (batchPending || powerPending.size || [...drafts.values()].some(draft => draft.applying)) return;
+    const targets = cameras.filter(camera => camera.enabled || (camera.enabled_preference ?? camera.enabled));
+    if (!targets.length) return;
+    batchPending = true;
+    sync();
+    try {
+      const failures = [];
+      for (const camera of targets) {
+        try { await call('camera', {camera_id: camera.id, enabled: false}, {timeout: 35000}); }
+        catch (error) { failures.push(`${label(camera)}: ${error.message}`); }
+      }
+      await refresh();
+      message(failures.length ? `Some cameras could not be turned off. ${failures.join(' ')}` : 'All cameras are off. Capture and image processing stay off after restart.', failures.length ? 'error' : '');
+    } catch (error) {
+      await refresh();
+      message(error.message, 'error');
+    } finally {
+      batchPending = false;
+      sync();
+    }
+  });
   $('cameras-refresh').addEventListener('click', refresh);
   $('primary-camera').addEventListener('change', event => choose(event.target.value));
   return {update, refresh, setActive(value) { active = value; sync(); if (active) refresh(); }, disconnect() { online = false; sync(); }};

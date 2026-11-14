@@ -35,12 +35,13 @@ class Media:
         self._camera_inventory_loaded = False
         self._primary_camera_id = None
         self._camera_preferences = {}
+        self._camera_enabled_preferences = {}
         self._camera_settings = self.root / 'cameras.json'
         if self._camera_settings.exists():
             try:
                 settings = json.loads(self._camera_settings.read_text())
                 primary = settings.get('primary_camera_id')
-                if settings.get('version') != 1 or not isinstance(primary, str) or not primary.startswith('csi-') or len(primary) != 16:
+                if settings.get('version') not in (1, 2) or not isinstance(primary, str) or not primary.startswith('csi-') or len(primary) != 16:
                     raise ValueError('Invalid primary camera settings')
                 self._primary_camera_id = primary
                 preferences = settings.get('resolutions', {})
@@ -51,7 +52,13 @@ class Media:
                             or not isinstance(size, dict) or set(size) != {'width', 'height'}
                             or any(type(size[key]) is not int or not 1 <= size[key] <= 16384 for key in size)):
                         raise ValueError('Invalid camera resolution')
+                enabled_preferences = settings.get('enabled', {})
+                if not isinstance(enabled_preferences, dict) or any(
+                        not isinstance(identifier, str) or not identifier.startswith('csi-') or len(identifier) != 16
+                        or type(enabled) is not bool for identifier, enabled in enabled_preferences.items()):
+                    raise ValueError('Invalid camera power preferences')
                 self._camera_preferences = preferences
+                self._camera_enabled_preferences = enabled_preferences
                 os.chmod(self._camera_settings, 0o600)
             except Exception as exc:
                 raise RuntimeError('Camera settings could not be read; repair cameras.json') from exc
@@ -117,6 +124,12 @@ class Media:
         return {key: slot[key] for key in ('id', 'hardware_id', 'index', 'model', 'sensor_rotation', 'connection')} | {
             'label': f"{slot['model'].upper()} · CSI {slot['index']}",
             'enabled': bool(thread and thread.is_alive() and not slot['stop'].is_set()),
+            'enabled_preference': self._camera_enabled_preferences.get(slot['id'], True),
+            'power_state': ('stopping' if thread and thread.is_alive() and slot['stop'].is_set()
+                            else 'on' if thread and thread.is_alive() and slot['jpeg'] is not None
+                            else 'starting' if thread and thread.is_alive()
+                            else 'error' if slot['error'] and self._camera_enabled_preferences.get(slot['id'], True)
+                            else 'off'),
             'available': slot['jpeg'] is not None and time.time() - (stamp or 0) <= 3,
             'error': slot['error'], 'timestamp': stamp,
             'width': slot.get('width', 640), 'height': slot.get('height', 480),
@@ -134,12 +147,13 @@ class Media:
         with self._lock:
             return [self._camera_status(slot) for slot in self._cameras.values()]
 
-    def _save_camera_settings(self, primary, preferences):
+    def _save_camera_settings(self, primary, preferences, enabled_preferences=None):
         fd, filename = tempfile.mkstemp(prefix='.cameras-', dir=self.root)
         try:
             with os.fdopen(fd, 'w') as out:
                 os.fchmod(out.fileno(), 0o600)
-                json.dump({'version': 1, 'primary_camera_id': primary, 'resolutions': preferences}, out)
+                json.dump({'version': 2, 'primary_camera_id': primary, 'resolutions': preferences,
+                           'enabled': self._camera_enabled_preferences if enabled_preferences is None else enabled_preferences}, out)
                 out.flush(); os.fsync(out.fileno())
             os.replace(filename, self._camera_settings)
         finally:
@@ -165,7 +179,8 @@ class Media:
         if not self.simulate:
             self._discover_cameras()
             for camera_id in tuple(self._cameras):
-                self.camera(True, camera_id)
+                if self._camera_enabled_preferences.get(camera_id, True):
+                    self._set_camera_enabled(True, camera_id)
 
     def close(self):
         with self._lock:
@@ -175,7 +190,7 @@ class Media:
         if thread and thread is not threading.current_thread():
             thread.join(timeout=2)
         for camera_id in tuple(self._cameras):
-            self.camera(False, camera_id)
+            self._set_camera_enabled(False, camera_id)
 
     def status(self):
         cameras = self.list_cameras()
@@ -201,6 +216,49 @@ class Media:
             }
 
     def camera(self, enabled: bool, camera_id=None):
+        """Apply and persist an explicit camera power preference.
+
+        A failed capture start or settings write restores the previous capture
+        state. Internal shutdown/reconfiguration bypass this user preference.
+        """
+        if type(enabled) is not bool:
+            raise ValueError('enabled must be a boolean')
+        self._discover_cameras()
+        camera_id = camera_id or self._primary_camera_id
+        if camera_id is None and not enabled:
+            return self.status()['camera']
+        with self._camera_operations:
+            with self._lock:
+                slot = self._cameras.get(camera_id)
+                if slot is None:
+                    if self.simulate and enabled:
+                        raise RuntimeError('Camera unavailable in simulation')
+                    raise ValueError('Unknown CSI camera')
+                previous = bool(slot['thread'] and slot['thread'].is_alive() and not slot['stop'].is_set())
+                previous_error = slot['error']
+            try:
+                self._set_camera_enabled(enabled, camera_id)
+                if enabled:
+                    self._wait_camera(slot)
+                preferences = {**self._camera_enabled_preferences, camera_id: enabled}
+                self._save_camera_settings(self._primary_camera_id, self._camera_preferences, preferences)
+            except Exception as exc:
+                try:
+                    self._set_camera_enabled(previous, camera_id)
+                    if previous:
+                        self._wait_camera(slot)
+                    else:
+                        with self._lock:
+                            slot['error'] = previous_error
+                            self._sync_primary(slot)
+                except Exception as recovery:
+                    raise RuntimeError(f'Camera power change failed: {exc}. Previous capture state could not be restored: {recovery}') from exc
+                raise RuntimeError(f'Camera power change failed: {exc}. Previous capture state restored.') from exc
+            with self._lock:
+                self._camera_enabled_preferences = preferences
+                return self._camera_status(slot)
+
+    def _set_camera_enabled(self, enabled: bool, camera_id=None):
         if type(enabled) is not bool:
             raise ValueError('enabled must be a boolean')
         self._discover_cameras()
@@ -235,6 +293,9 @@ class Media:
                     raise RuntimeError('Camera is still stopping; try again after capture finishes')
             with self._lock:
                 slot['frame'] = slot['jpeg'] = None
+                slot['timestamp'] = None
+                slot['capture_metadata'] = {}
+                slot['brightness'] = None
                 self._sync_primary(slot)
                 return self._camera_status(slot)
 
@@ -267,13 +328,13 @@ class Media:
             # Joining happens outside the frame lock so capture can release its
             # buffers before the same sensor is acquired again.
             if enabled:
-                self.camera(False, camera_id)
+                self._set_camera_enabled(False, camera_id)
             try:
                 from .camera import stream_frame_rate
                 with self._lock:
                     slot.update(width=width, height=height, frame_rate=stream_frame_rate(width, height))
                 if enabled:
-                    self.camera(True, camera_id)
+                    self._set_camera_enabled(True, camera_id)
                     self._wait_camera(slot)
                 preferences = {**self._camera_preferences, camera_id: {'width': width, 'height': height}}
                 self._save_camera_settings(self._primary_camera_id, preferences)
@@ -282,11 +343,11 @@ class Media:
                 recovery_error = None
                 try:
                     if enabled:
-                        self.camera(False, camera_id)
+                        self._set_camera_enabled(False, camera_id)
                     with self._lock:
                         slot.update(previous)
                     if enabled:
-                        self.camera(True, camera_id)
+                        self._set_camera_enabled(True, camera_id)
                         self._wait_camera(slot)
                 except Exception as recovery:
                     recovery_error = str(recovery)

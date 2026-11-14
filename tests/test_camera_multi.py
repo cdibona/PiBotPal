@@ -232,6 +232,106 @@ def test_camera_preferences_accept_legacy_selection_and_reject_malformed_size(tm
         Media()
 
 
+@pytest.mark.parametrize('disabled', [IDS[:1], IDS])
+def test_camera_power_preferences_survive_shutdown_and_restart(cameras, disabled):
+    media, fake = cameras
+    media.start()
+    for camera_id in IDS: wait_available(media, camera_id)
+    for camera_id in disabled:
+        result = media.camera(False, camera_id)
+        assert result['power_state'] == 'off' and result['enabled_preference'] is False
+        assert not result['available'] and result['timestamp'] is None
+        assert result['capture_metadata'] == {} and result['brightness'] is None
+        assert camera_id in fake.closed
+        with pytest.raises(RuntimeError): media.jpeg(camera_id)
+    saved = media._camera_settings.read_bytes()
+    assert json.loads(saved)['version'] == 2
+    assert media._camera_settings.stat().st_mode & 0o777 == 0o600
+    media.close()
+    assert media._camera_settings.read_bytes() == saved, 'Shutdown must preserve user preferences'
+    opened = list(fake.opened)
+    reloaded = Media()
+    try:
+        reloaded.start()
+        for camera_id in set(IDS) - set(disabled): wait_available(reloaded, camera_id)
+        assert set(fake.opened[len(opened):]) == set(IDS) - set(disabled)
+        rows = {row['id']: row for row in reloaded.list_cameras()}
+        for camera_id in disabled:
+            assert not rows[camera_id]['enabled'] and not rows[camera_id]['enabled_preference']
+    finally:
+        reloaded.close()
+
+
+def test_off_camera_resolution_and_selection_preserve_power_preferences(cameras):
+    media, fake = cameras
+    media.start()
+    for camera_id in IDS: wait_available(media, camera_id)
+    media.camera(False, IDS[0])
+    opened = list(fake.opened)
+    result = media.configure_camera(IDS[0], 320, 240)
+    assert not result['enabled'] and not result['enabled_preference']
+    media.select_primary(IDS[1])
+    assert json.loads(media._camera_settings.read_text())['enabled'] == {IDS[0]: False}
+    assert fake.opened == opened
+    assert media.jpeg(IDS[1])
+
+
+@pytest.mark.parametrize('initial', [False, True])
+def test_camera_power_save_failure_restores_previous_capture_and_preferences(cameras, monkeypatch, initial):
+    media, fake = cameras
+    media.camera(initial, IDS[0])
+    saved = media._camera_settings.read_bytes()
+    def fail(*args): raise OSError('Synthetic settings write failure')
+    monkeypatch.setattr(media, '_save_camera_settings', fail)
+    with pytest.raises(RuntimeError, match='Previous capture state restored'):
+        media.camera(not initial, IDS[0])
+    row = next(row for row in media.list_cameras() if row['id'] == IDS[0])
+    assert row['enabled'] is initial and row['available'] is initial
+    assert row['enabled_preference'] is initial
+    assert media._camera_settings.read_bytes() == saved
+    assert row['error'] is None
+
+
+def test_camera_start_failure_keeps_camera_off_and_preferences_unchanged(cameras):
+    media, fake = cameras
+    media.camera(False, IDS[0])
+    saved = media._camera_settings.read_bytes()
+    fake.failed_sizes.add((640, 480))
+    with pytest.raises(RuntimeError, match='Previous capture state restored'):
+        media.camera(True, IDS[0])
+    row = next(row for row in media.list_cameras() if row['id'] == IDS[0])
+    assert row['power_state'] == 'off' and not row['enabled_preference']
+    assert not row['available'] and row['error'] is None
+    assert media._camera_settings.read_bytes() == saved
+    assert fake.closed == [IDS[0]]
+
+
+def test_legacy_settings_start_enabled_and_upgrade_without_losing_resolution(cameras):
+    media, fake = cameras
+    media._camera_settings.write_text(json.dumps({'version': 1, 'primary_camera_id': IDS[1],
+        'resolutions': {IDS[0]: {'width': 320, 'height': 240}}}))
+    reloaded = Media()
+    try:
+        reloaded.start()
+        for camera_id in IDS: wait_available(reloaded, camera_id)
+        assert all(row['enabled_preference'] for row in reloaded.list_cameras())
+        reloaded.camera(False, IDS[1])
+        saved = json.loads(reloaded._camera_settings.read_text())
+        assert saved == {'version': 2, 'primary_camera_id': IDS[1],
+            'resolutions': {IDS[0]: {'width': 320, 'height': 240}}, 'enabled': {IDS[1]: False}}
+        assert reloaded.get_frame(IDS[0]).shape == (240, 320, 3)
+    finally:
+        reloaded.close()
+
+
+@pytest.mark.parametrize('enabled', [{IDS[0]: 'false'}, {IDS[0]: 0}, {'not-a-camera': True}, []])
+def test_malformed_camera_power_preferences_are_rejected(tmp_path, monkeypatch, enabled):
+    monkeypatch.setenv('PIBOTPAL_DATA', str(tmp_path))
+    (tmp_path / 'cameras.json').write_text(json.dumps({'version': 2, 'primary_camera_id': IDS[0], 'enabled': enabled}))
+    with pytest.raises(RuntimeError, match='Camera settings could not be read'):
+        Media()
+
+
 def test_telemetry_does_not_wait_for_camera_reconfiguration(cameras):
     media, fake = cameras
     media.list_cameras()  # Inventory is already available before configuring.

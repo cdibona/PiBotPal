@@ -23,3 +23,5 @@
 .capture-diagnostics .camera-hardware-id{margin-top:12px;font-size:11px!important}
 .capture-diagnostics pre{font-size:12px}
 @media(max-width:420px){.camera-resolution-form{padding:12px;gap:9px}.camera-resolution-select{font-size:13px}.camera-actions .text-link{flex-basis:100%;margin-left:0}.csi-camera-card .panel-body{padding:15px}.camera-card-title .caption{font-size:11px}}
+
+.camera-power-toggle{min-width:110px;min-height:42px;font-size:14px;font-weight:600}.camera-power-toggle[data-state=on]{color:var(--teal);border-color:var(--teal);background:color-mix(in srgb,var(--teal) 10%,var(--panel))}.camera-power-state{font-size:13px;color:var(--muted);padding-left:12px;border-left:3px solid var(--line)}.camera-power-state[data-state=on]{border-left-color:var(--teal);color:var(--text)}#cameras-all-off{min-height:40px;font-size:13px}#cameras-all-off:disabled{opacity:.5}.camera-actions .camera-power-toggle[aria-busy=true]{min-width:110px}@media(max-width:420px){#admin-cameras>.admin-intro>.admin-actions{width:100%;flex-wrap:wrap;gap:10px}.camera-power-toggle{min-width:105px}}
