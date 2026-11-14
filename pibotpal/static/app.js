@@ -213,7 +213,7 @@ document.querySelectorAll('[data-tab]').forEach(tab=>tab.addEventListener('click
 window.addEventListener('hashchange',()=>selectTab(location.hash.slice(1),false));
 
 $('arm').addEventListener('click',()=>command('arm',{armed:!status.armed},status.armed?'Motion disarmed.':'Motion armed. Place the crawler on a clear, stable surface.').catch(()=>{}));
-const stop=()=>command('stop',{},'Stop requested. Motion is disarmed.').catch(()=>{});$('stop').addEventListener('click',stop);$('drive-stop').addEventListener('click',stop);
+const stop=()=>{plans?.cancelPendingPlayback();return command('stop',{},'Stop requested. Motion is disarmed.').catch(()=>{});};$('stop').addEventListener('click',stop);$('drive-stop').addEventListener('click',stop);
 document.querySelectorAll('[data-move]').forEach(button=>button.addEventListener('click',()=>command('move',{name:button.dataset.move,speed:Number($('speed').value),steps:1}).catch(()=>{})));
 $('speed').addEventListener('input',()=>{$('speed-value').textContent=`${$('speed').value}%`;});
 $('leg-form').addEventListener('submit',event=>{event.preventDefault();command('set_leg',{leg:Number($('leg').value),x:Number($('leg-x').value),y:Number($('leg-y').value),z:Number($('leg-z').value),speed:Number($('speed').value)}).catch(()=>{});});
@@ -227,7 +227,7 @@ $('reset-view').addEventListener('click',()=>model?.reset());
 window.addEventListener('keydown',event=>{if(event.key==='Escape'){event.preventDefault();stop();}});
 window.addEventListener('offline',()=>{connected=false;cameraFeed.setEnabled(false);cameraViews?.disconnect();plans?.update({});updateControls();});
 window.addEventListener('online',()=>refresh());
-function stopOnLeave(){ $('microphone-player').pause();if(!initialized||!(status.armed||status.microphone?.enabled||status.examples?.running||status.plan?.running))return;fetch('/mcp',{method:'POST',keepalive:true,headers:{'Content-Type':'application/json','Accept':'application/json, text/event-stream','MCP-Protocol-Version':'2025-03-26'},body:JSON.stringify({jsonrpc:'2.0',id:++rpcId,method:'tools/call',params:{name:'stop',arguments:{}}})}).catch(()=>{});notice('Motion stopped and audio muted when this page left the foreground.');}
+function stopOnLeave(){ $('microphone-player').pause();const starting=plans?.playbackPending;if(starting)plans.cancelPendingPlayback();if((!initialized&&!starting)||!(starting||status.armed||status.microphone?.enabled||status.examples?.running||status.plan?.running))return;fetch('/mcp',{method:'POST',keepalive:true,headers:{'Content-Type':'application/json','Accept':'application/json, text/event-stream','MCP-Protocol-Version':'2025-03-26'},body:JSON.stringify({jsonrpc:'2.0',id:++rpcId,method:'tools/call',params:{name:'stop',arguments:{}}})}).catch(()=>{});notice('Motion stopped and audio muted when this page left the foreground.');}
 window.addEventListener('pagehide',stopOnLeave);document.addEventListener('visibilitychange',()=>{if(document.hidden)stopOnLeave();else refresh();});
 try{const {RobotView}=await import('./robot-view.js');model=new RobotView($('robot-view'));}catch(error){$('model-error').textContent=`3D rendering unavailable: ${error.message}`;$('model-error').hidden=false;}
 try{const {initAdmin}=await import('./admin.js');admin=initAdmin({call,notice,onConfigChanged:loadExamples,onSectionChange:name=>{hardwareAdmin?.setActive(!$('admin').hidden?name:null);cameraViews?.setActive(name==='cameras'&&!$('admin').hidden);}});}catch(error){$('admin').textContent=`Admin unavailable: ${error.message}`;}

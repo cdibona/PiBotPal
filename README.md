@@ -176,13 +176,26 @@ or capture the current complete, idle commanded pose. The browser preview and
 scrubber do not send motion commands. Positions are commands, not measurements
 of hand-positioned legs. Built-in actions can be restored to their defaults.
 
+Select a numbered keyframe, then click an outlined joint in the leg preview to
+edit that servo with the adjacent slider or angle field. Keyboard users can
+focus a joint and press Enter or Space. Changing Wave's second frame, for
+example, changes only that frame until you save the action. Solid foot markers
+are endpoints; the outlined nodes are the three editable servo pivots per leg.
+
+Both editors have **Play on robot** and **Stop** controls at the top. When motion
+is disarmed, the explicit **Arm & play on robot** button validates the saved
+work, arms, and starts it in one request. Unsaved changes must be saved first.
+Playback highlights the current keyframe or continuous frame range and routine
+step. Stop cancels and disarms, including when a Play request is still pending.
+Browser **Preview sequence** remains local and never moves the robot.
+
 **Complete each keyframe** finishes all affected joints before starting the next
 frame, using Admin's joint/leg grouping and power budget. **Continuous sampled
 path** preserves smooth gait trajectories across adjacent frames with the same
 rate; rate changes and holds create boundaries. Gait cycles repeat the visible
 saved sequence. Frame rates are 1–144°/s and holds 0–30 seconds; an action can
 contain 128 frames and run for at most 300 seconds. The caller's existing speed
-setting caps the rate at `speed * 1.8`°/s; the planner's Run action uses 80 so the
+setting caps the rate at `speed * 1.8`°/s; the planner's Play action uses 80 so the
 frame rates govern. Per-servo and total power budgets can slow execution further.
 The browser preview illustrates poses and frame timing, without simulating the
 power scheduler or unknown startup positions.
@@ -226,6 +239,9 @@ revision, frame or continuous frame range, cycle, and phase.
 Admin's model tool permissions include **Read shared actions and keyframes**
 (`action_list`) so a configured assistant can discover custom actions without
 receiving movement or editing permission. Existing model permissions are preserved.
+MCP `move` and `plan_run` accept an optional `arm_motion=true` for explicit
+operator arm-and-play. Configured models cannot use this argument; their
+movement tools still require prior operator arming.
 Sensor conditions/branching are not implemented in this version; plans do not
 provide automatic obstacle avoidance. Unsupported conditional instructions are
 rejected by the simple parser rather than silently dropped.

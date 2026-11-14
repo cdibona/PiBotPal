@@ -57,15 +57,24 @@ with tempfile.TemporaryDirectory(prefix='pibotpal-planner-browser-') as director
                     assert not state['armed'] and not state['busy']
                     store.delete(args['name']); result = {'deleted': args['name']}
                 elif name == 'move':
-                    assert state['armed'] and not state['busy']
-                    assert args == {'name': 'stand', 'speed': 80, 'steps': 1}
-                    result = {'started': True}
+                    assert not state['busy']
+                    assert args['name'] == 'stand' and args['speed'] == 80 and args['steps'] == 1
+                    assert state['armed'] or args.get('arm_motion') is True
+                    if args.get('arm_motion'): state['armed'] = True
+                    state['busy'] = True
+                    state['keyframes'] = {'action':'stand','revision':store.get('stand')['revision'],'frame_index':0,'frame_end_index':0,'frame_count':1,'cycle':1,'cycles':1,'phase':'moving'}
+                    result = copy.deepcopy(state)
                 elif name == 'plan_save':
                     result = {**args, 'id': args.get('plan_id', 'routine-' + str(len(plans) + 1))}
                     plans[:] = [plan for plan in plans if plan['id'] != result['id']] + [result]
                 elif name == 'plan_run':
-                    assert state['armed']
-                    result = {'running': True, 'plan_name': plans[-1]['name'], 'total_steps': len(plans[-1]['steps']), 'step_index': 0}
+                    assert state['armed'] or args.get('arm_motion') is True
+                    if args.get('arm_motion'): state['armed'] = True
+                    state['plan'] = {'running': True, 'phase':'running', 'plan_id':args['plan_id'], 'plan_name': plans[-1]['name'], 'step_count': len(plans[-1]['steps']), 'step_index': 0, 'current_step':plans[-1]['steps'][0]}
+                    result = copy.deepcopy(state['plan'])
+                elif name == 'stop':
+                    state.update(armed=False,busy=False,estop=True,plan={**state['plan'],'running':False,'phase':'cancelled'},keyframes={**state.get('keyframes',{}),'phase':'cancelled'})
+                    result = copy.deepcopy(state)
                 elif name == 'get_status': result = copy.deepcopy(state)
                 elif name == 'list_examples': result = []
                 elif name == 'admin_get': result = {'providers': [], 'connections': [], 'defaults': {}, 'server': {}}
@@ -83,7 +92,8 @@ with tempfile.TemporaryDirectory(prefix='pibotpal-planner-browser-') as director
         expect(page.locator('#action-count')).to_have_text('16 ACTIONS', timeout=30000)
         expect(page.locator('#action-editor-title')).to_have_text('Stand')
         expect(page.locator('#frame-capture')).to_be_disabled()
-        expect(page.locator('#action-run')).to_be_disabled()
+        expect(page.locator('#action-run')).to_be_enabled()
+        expect(page.locator('#action-run')).to_have_text('▶ Arm & play on robot')
         assert page.locator('#frame-angle-0').input_value() != '0', 'Unknown position must never create zero-angle targets'
 
         def sync(**changes):
@@ -138,16 +148,43 @@ with tempfile.TemporaryDirectory(prefix='pibotpal-planner-browser-') as director
         assert store.get('stand')['frames'][0]['speed_deg_s'] == 17
         assert store.get('stand')['frames'][0]['angles'][:2] == [-40, 45]
         assert all(r['args'].get('disarm') for r in requests if r['name'] == 'action_save')
-        sync(armed=True)
+        sync(armed=False)
         expect(page.locator('#action-run')).to_be_enabled()
         page.locator('#action-run').click()
-        expect(page.locator('#action-notice')).to_contain_text('Saved action started')
+        expect(page.locator('#action-transport-notice')).to_contain_text('Saved action started')
         assert len([r for r in requests if r['name'] == 'move']) == 1
-        sync(armed=False)
+        expect(page.locator('#action-progress')).to_contain_text('playing frame 1')
+        expect(page.locator('.keyframe-card.is-playing')).to_have_count(1)
+        expect(page.locator('#action-run')).to_be_disabled()
+        page.locator('#action-stop').click()
+        expect(page.locator('#action-transport-notice')).to_contain_text('stopped')
+        assert not state['armed'] and not state['busy']
+        expect(page.locator('#action-run')).to_be_enabled()
+        sync(armed=False,busy=False,estop=False)
 
         # Wave and gait definitions are real library frames, editable like Stand.
         page.locator('[data-action="wave"]').click()
         assert page.locator('.keyframe-card').count() > 1
+        original_wave = copy.deepcopy(store.get('wave')['frames'])
+        page.locator('.keyframe-card[data-frame="1"]').click()
+        page.locator('.preview-joint-node[data-servo="0"]').click()
+        expect(page.locator('#selected-joint-name')).to_contain_text('Right front')
+        page.locator('#selected-joint-angle').fill('-35')
+        expect(page.locator('#frame-angle-0')).to_have_value('-35')
+        page.locator('.preview-joint-node[data-servo="1"]').focus()
+        page.locator('.preview-joint-node[data-servo="1"]').press('Enter')
+        page.locator('#selected-joint-slider').fill('40')
+        expect(page.locator('#frame-angle-1')).to_have_value('40')
+        expect(page.locator('#action-run')).to_be_disabled()
+        assert store.get('wave')['frames'] == original_wave, 'Node edits must remain a draft'
+        assert len([r for r in requests if r['name'] == 'move']) == 1
+        page.locator('#action-save').click()
+        expect(page.locator('#action-notice')).to_contain_text('Action saved')
+        modified_wave = store.get('wave')['frames']
+        assert modified_wave[0] == original_wave[0] and modified_wave[2:] == original_wave[2:]
+        assert modified_wave[1]['angles'][:2] == [-35, 40]
+        page.locator('.keyframe-card[data-frame="1"]').click()
+        expect(page.locator('#frame-angle-0')).to_have_value('-35')
         page.locator('[data-action="forward"]').click()
         expect(page.locator('#action-playback')).to_have_value('continuous')
         page.locator('#action-playback').select_option('keyframes')
@@ -167,7 +204,7 @@ with tempfile.TemporaryDirectory(prefix='pibotpal-planner-browser-') as director
         expect(page.locator('[data-action="my greeting"]')).to_be_visible()
         assert len(store.get('my greeting')['frames']) == 2
         if fixture == 'full': expect(page.locator('#dashboard-action option[value="my greeting"]')).to_have_count(1)
-        else: assert page.evaluate('window.changedCatalog') == 2
+        else: assert page.evaluate('window.changedCatalog') == 3
         page.locator('#action-copy').click()
         page.locator('#action-name').fill('temporary action')
         page.locator('#action-save').click()
@@ -201,12 +238,16 @@ with tempfile.TemporaryDirectory(prefix='pibotpal-planner-browser-') as director
         page.locator('#planner-actions-tab').click()
         expect(page.locator('#action-pose-preview')).to_have_attribute('viewBox', '0 0 680 190' if width == 1440 else '0 0 340 380')
         page.locator('#planner-routines-tab').click()
-        expect(page.locator('#plan-run')).to_be_disabled()
-        sync(armed=True)
+        expect(page.locator('#plan-run')).to_be_enabled()
+        expect(page.locator('#plan-run')).to_have_text('▶ Arm & play on robot')
         page.locator('#plan-run').click()
         expect(page.locator('#plan-notice')).to_contain_text('Saved plan started')
         assert len([r for r in requests if r['name'] == 'plan_run']) == 1
-        sync(armed=False)
+        expect(page.locator('#plan-progress-detail')).to_contain_text('Step 1 of 2')
+        expect(page.locator('.plan-step.is-playing')).to_have_count(1)
+        page.locator('#plan-stop').click()
+        expect(page.locator('#plan-notice')).to_contain_text('Plan stopped')
+        assert not state['armed'] and not state['plan']['running']
         page.locator('#plan-new').click()
         expect(page.locator('#plan-name')).to_have_value('')
         expect(page.locator('.plan-step')).to_have_count(0)
@@ -223,6 +264,25 @@ with tempfile.TemporaryDirectory(prefix='pibotpal-planner-browser-') as director
         page.screenshot(path=f'/tmp/pibotpal-planner-{fixture}-{width}.png', full_page=True)
         page.evaluate("document.documentElement.dataset.theme='light'")
         page.screenshot(path=f'/tmp/pibotpal-planner-{fixture}-{width}-light.png', full_page=True)
+        if fixture == 'isolated' and width == 1440:
+            # Stop must win even if the network delivers Play's reply late.
+            outcome = page.evaluate('''async () => {
+                const {initPlayback} = await import('/static/playback.js');
+                const calls = []; let release, state = {armed:false,busy:false};
+                const playback = initPlayback({getStatus:()=>state,onStatus:s=>state=s,
+                    call:async(name,args)=>{calls.push({name,args});if(name==='move'){
+                        await new Promise(resolve=>release=resolve);state={armed:true,busy:true};return state;
+                    }if(name==='stop')return state={armed:false,busy:false};return state;}});
+                const play = playback.play('move',{name:'wave',speed:80,steps:1}).catch(e=>e.message);
+                const duplicate = await playback.play('move',{name:'wave'}).catch(e=>e.message);
+                const stop = playback.stop();
+                release();const cancelled = await play;await stop;
+                return {calls,state,duplicate,cancelled,pending:playback.pending};
+            }''')
+            assert [c['name'] for c in outcome['calls']] == ['move', 'stop', 'stop']
+            assert outcome['calls'][0]['args']['arm_motion'] is True
+            assert not outcome['state']['armed'] and not outcome['state']['busy'] and not outcome['pending']
+            assert 'Wait' in outcome['duplicate'] and 'stopped' in outcome['cancelled']
         page.close()
         print(f'PASS planner {fixture} {width}px: shared actions, frames, save gates, preview, new action, new routine')
     browser.close()

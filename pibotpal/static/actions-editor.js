@@ -7,12 +7,13 @@ const finitePose = values => Array.isArray(values) && values.length === 12 && va
 const title = value => value ? value[0].toUpperCase() + value.slice(1) : 'New action';
 const svgNS = 'http://www.w3.org/2000/svg';
 
-export function initActionsEditor({root, call, getStatus, onChanged, onAddToPlan}) {
+export function initActionsEditor({root, call, getStatus, onChanged, onAddToPlan, playback}) {
   root.innerHTML = `
     <div class="action-library-intro"><div><h2>One library for every controller</h2><p>Stand, Sit, Wave and your own actions are made of servo keyframes. Saving an action updates the dashboard, USB controller, plans and MCP clients.</p></div><button id="action-new" type="button" class="primary">+ New keyframe action</button></div>
     <div class="keyframe-workspace">
       <aside class="panel action-library-panel" aria-label="Shared motion actions"><div class="panel-heading"><h3>Actions</h3><span id="action-count" class="tag">LOADING</span></div><label class="action-search">Find an action<input id="action-search" type="search" placeholder="Stand, wave, my action…"></label><div id="action-library" class="action-library"></div></aside>
       <article class="panel keyframe-editor"><div class="panel-heading"><div><h2 id="action-editor-title">Choose an action</h2><p id="action-origin" class="caption">Loading the shared motion library.</p></div><span id="action-edit-state" class="tag">LOADING</span></div>
+        <div class="action-transport" aria-label="Action playback on the robot"><div class="action-transport-buttons"><button id="action-run" type="button" class="primary" disabled>▶ Arm &amp; play on robot</button><button id="action-stop" type="button" class="danger">■ Stop robot</button></div><p id="action-run-hint" class="caption">Select a saved action to play it on the robot.</p><p id="action-progress" class="action-progress" role="status" aria-live="polite"></p><p id="action-transport-notice" class="notice" role="status" hidden></p></div>
         <form id="action-form" class="admin-form" novalidate>
           <div class="action-metadata"><label>Action name<input id="action-name" maxlength="64" required placeholder="my greeting"></label><label>Playback<select id="action-playback"><option value="keyframes">Complete each keyframe</option><option value="continuous">Continuous sampled path</option></select></label></div>
           <label>Description<textarea id="action-description" maxlength="2000" rows="2" placeholder="What this action should do"></textarea></label>
@@ -20,21 +21,21 @@ export function initActionsEditor({root, call, getStatus, onChanged, onAddToPlan
           <div class="keyframe-timeline-heading"><h3>Keyframes</h3><span id="action-frame-count" class="caption">0 frames</span></div>
           <div id="action-timeline" class="keyframe-timeline" role="list" aria-label="Action keyframes"></div>
           <div class="keyframe-tools"><button id="frame-add" type="button">+ Add frame</button><button id="frame-duplicate" type="button">Duplicate frame</button><button id="frame-left" type="button" aria-label="Move selected frame earlier">← Earlier</button><button id="frame-right" type="button" aria-label="Move selected frame later">Later →</button><button id="frame-remove" type="button" class="delete-button">Remove frame</button></div>
-          <div class="keyframe-preview"><div class="keyframe-preview-heading"><div><h3>Pose preview</h3><p class="caption">Side view of each leg · browser only · no robot movement</p></div><button id="action-preview" type="button" class="outline">▶ Preview sequence</button></div><svg id="action-pose-preview" viewBox="0 0 680 190" role="img" aria-label="Selected keyframe leg positions"></svg><label class="preview-scrubber">Scrub keyframes<input id="action-scrub" type="range" min="0" max="0" step="0.01" value="0"></label><p id="action-preview-detail" class="caption">Preview uses commanded angles, without position feedback.</p></div>
           <div class="selected-keyframe-heading"><h3 id="frame-editor-title">Frame 1</h3><button id="frame-capture" type="button">Use current servo positions</button></div>
           <div class="keyframe-transition"><label>Transition speed into this frame<div class="keyframe-unit"><input id="frame-speed" type="number" min="1" max="144" step="any" required><span>°/s</span></div></label><label>Hold after reaching this frame<div class="keyframe-unit"><input id="frame-hold" type="number" min="0" max="30" step="any" required><span>seconds</span></div></label></div>
           <p id="action-budget-hint" class="caption"></p>
+          <div class="keyframe-preview"><div class="keyframe-preview-heading"><div><h3>Pose preview</h3><p class="caption">Side view of each leg. Click a keyframe, then click a joint to edit its angle. Preview and edits stay in the browser.</p></div><button id="action-preview" type="button" class="outline">▶ Preview sequence</button></div><svg id="action-pose-preview" viewBox="0 0 680 190" role="group" aria-label="Interactive keyframe servo joints"></svg><div id="selected-joint-editor" class="selected-joint-editor"><div><strong id="selected-joint-name">Select a joint above</strong><p id="selected-joint-detail" class="caption">The twelve outlined nodes are servo pivots. The solid feet are endpoints.</p></div><div class="selected-joint-inputs"><label>Joint angle<input id="selected-joint-slider" type="range" min="-90" max="90" step="0.1" disabled></label><label>Degrees<div class="keyframe-unit"><input id="selected-joint-angle" type="number" step="any" disabled><span>°</span></div></label></div></div><label class="preview-scrubber">Scrub keyframes<input id="action-scrub" type="range" min="0" max="0" step="0.01" value="0"></label><p id="action-preview-detail" class="caption">Preview uses commanded angles, without position feedback.</p></div>
           <div id="frame-angles" class="keyframe-leg-grid"></div>
           <p class="caption keyframe-position-note">Angles are logical servo commands. The first physical pose is unknown after restart; initialization is staggered and cannot be previewed as measured movement.</p>
           <div id="action-notice" class="notice" role="status" aria-live="polite" hidden></div>
           <p id="action-validation" class="keyframe-validation" role="status"></p>
-          <div class="action-save-row"><button id="action-save" type="submit" class="primary" disabled>Save action</button><button id="action-discard" type="button" disabled>Discard changes</button><button id="action-copy" type="button">Save as new action</button><button id="action-run" type="button" class="outline" disabled>Run saved action ↗</button><button id="action-add-to-plan" type="button" disabled>+ Add to routine</button></div>
+          <div class="action-save-row"><button id="action-save" type="submit" class="primary" disabled>Save action</button><button id="action-discard" type="button" disabled>Discard changes</button><button id="action-copy" type="button">Save as new action</button><button id="action-add-to-plan" type="button" disabled>+ Add to routine</button></div>
           <div class="action-maintenance"><button id="action-reset" type="button" class="subtle" hidden>Restore built-in default</button><button id="action-delete" type="button" class="delete-button" hidden>Delete action</button><p id="action-save-hint" class="caption">Saving never starts movement. Run requires arming.</p></div>
         </form>
       </article>
     </div>`;
   const $ = id => root.querySelector(`#${id}`);
-  let actions = [], draft = null, baseline = null, selectedName = null, selectedFrame = 0;
+  let actions = [], draft = null, baseline = null, selectedName = null, selectedFrame = 0, selectedJoint = null;
   let dirty = false, saving = false, previewTimer = null, previewFrame = 0, previewStarted = 0;
   let maxFrames = 128, previewAngles = null, previewWidth = 0;
   const angleInputs = [];
@@ -47,7 +48,7 @@ export function initActionsEditor({root, call, getStatus, onChanged, onAddToPlan
       const input = document.createElement('input'); Object.assign(input, {type: 'number', min: BOUNDS[joint][0], max: BOUNDS[joint][1], step: 'any', required: true});
       input.id = `frame-angle-${index}`; input.setAttribute('aria-label', `${LEGS[leg]} ${JOINTS[joint]} angle`);
       const suffix = document.createElement('span'); suffix.textContent = '°'; unit.append(input, suffix); label.append(unit); fieldset.append(label); angleInputs.push(input);
-      input.addEventListener('input', () => { if (draft) { draft.frames[selectedFrame].angles[index] = input.value === '' ? NaN : Number(input.value); changed(false); } });
+      input.addEventListener('input', () => { if (draft) { draft.frames[selectedFrame].angles[index] = input.value === '' ? NaN : Number(input.value); changed(false); syncJointEditor(); } });
     }
     $('frame-angles').append(fieldset);
   }
@@ -69,34 +70,45 @@ export function initActionsEditor({root, call, getStatus, onChanged, onAddToPlan
   function controls() {
     const robot = getStatus() || {}, blocked = robot.busy || robot.plan?.running || (robot.examples?.running && !robot.examples?.permits_manual_motion);
     const known = typeof robot.armed === 'boolean' && typeof robot.busy === 'boolean';
-    const error = validation(), count = draft?.frames?.length || 0;
-    for (const id of ['action-name','action-description','action-playback','frame-speed','frame-hold']) $(id).disabled = saving || !draft;
-    for (const input of angleInputs) input.disabled = saving || !draft;
-    for (const button of root.querySelectorAll('.action-library-item,.keyframe-card')) button.disabled = saving;
-    $('action-save').disabled = saving || !dirty || !known || blocked || Boolean(error);
+    const error = validation(), count = draft?.frames?.length || 0, pending = Boolean(playback?.pending), editingLocked = saving || pending;
+    const k = robot.keyframes || {}, active = robot.busy && ['moving','holding'].includes(k.phase);
+    const matching = k.action === selectedName && k.revision === baseline?.revision;
+    const first = Number.isInteger(k.frame_index) ? k.frame_index : -1, last = Number.isInteger(k.frame_end_index) ? k.frame_end_index : first;
+    for (const card of root.querySelectorAll('.keyframe-card')) card.classList.toggle('is-playing', Boolean(active && matching && !dirty && Number(card.dataset.frame) >= first && Number(card.dataset.frame) <= last));
+    $('action-progress').textContent = active ? `${title(k.action)} · ${k.phase === 'holding' ? 'holding' : 'playing'} frame${last > first ? 's' : ''} ${first + 1}${last > first ? `–${last + 1}` : ''} of ${k.frame_count} · cycle ${k.cycle || 1}/${k.cycles || 1}${dirty && k.action === selectedName ? ' · saved revision is playing; your draft is separate' : ''}` : matching && ['complete','cancelled','failed'].includes(k.phase) ? `${title(k.action)} · ${k.phase}` : '';
+    $('action-stop').disabled = !known || !playback || playback.stopping;
+    $('action-stop').textContent = playback?.stopping ? 'Stopping…' : '■ Stop robot';
+    for (const id of ['action-name','action-description','action-playback','frame-speed','frame-hold']) $(id).disabled = editingLocked || !draft;
+    for (const input of angleInputs) input.disabled = editingLocked || !draft;
+    for (const button of root.querySelectorAll('.action-library-item,.keyframe-card')) button.disabled = editingLocked;
+    $('action-save').disabled = editingLocked || !dirty || !known || blocked || Boolean(error);
     $('action-save').textContent = saving ? 'Saving…' : robot.armed ? 'Disarm and save action' : 'Save action';
-    $('action-discard').disabled = saving || !dirty;
-    $('action-run').disabled = saving || dirty || !selectedName || !known || !robot.armed || blocked || robot.estop;
-    $('action-add-to-plan').disabled = !selectedName || dirty || saving;
+    $('action-discard').disabled = editingLocked || !dirty;
+    $('action-run').disabled = editingLocked || dirty || !selectedName || !known || !playback || blocked || Boolean(error);
+    $('action-run').textContent = playback?.stopping ? 'Stopping…' : pending ? 'Starting…' : robot.armed ? '▶ Play on robot' : '▶ Arm & play on robot';
+    $('action-run-hint').textContent = !known ? 'Connect to the robot to play this action.' : pending ? 'Waiting for the robot. Stop remains available.' : dirty ? 'Save your keyframe changes before playing on the robot.' : !selectedName ? 'Save this new action before playing it.' : blocked ? 'Stop or finish the current motion, routine or test before playing.' : robot.armed ? 'Plays this saved action once using its keyframe speeds and the power budget.' : 'Arm & play enables motion and starts this saved action once. Editing and Preview never move the robot.';
+    for (const id of ['selected-joint-slider','selected-joint-angle']) $(id).disabled = editingLocked || selectedJoint === null || !draft;
+    for (const node of root.querySelectorAll('.preview-joint-node')) { node.setAttribute('aria-disabled',String(editingLocked)); node.tabIndex = editingLocked ? -1 : 0; }
+    $('action-add-to-plan').disabled = !selectedName || dirty || editingLocked;
     $('action-edit-state').textContent = saving ? 'SAVING' : dirty ? 'UNSAVED CHANGES' : draft ? 'SAVED' : 'NO ACTION';
     $('action-edit-state').className = `tag ${dirty ? 'orange' : ''}`;
     $('action-validation').textContent = dirty ? error : '';
-    $('action-new').disabled = saving || (!finitePose(robot.servo_angles) && !actions.some(a => a.name === 'stand'));
-    $('action-copy').disabled = saving || !draft;
-    $('frame-add').disabled = saving || !draft || count >= maxFrames;
-    $('frame-duplicate').disabled = saving || !draft || count >= maxFrames;
-    $('frame-left').disabled = saving || !draft || selectedFrame === 0;
-    $('frame-right').disabled = saving || !draft || selectedFrame >= count - 1;
-    $('frame-remove').disabled = saving || !draft || count <= 1;
-    $('frame-capture').disabled = saving || !draft || blocked || !finitePose(robot.servo_angles);
-    $('action-preview').disabled = !draft || count < 2 || draft.frames.some(f => !finitePose(f.angles) || !Number.isFinite(f.speed_deg_s) || f.speed_deg_s <= 0 || !Number.isFinite(f.hold_seconds));
-    $('action-scrub').disabled = !draft || count < 2;
+    $('action-new').disabled = editingLocked || (!finitePose(robot.servo_angles) && !actions.some(a => a.name === 'stand'));
+    $('action-copy').disabled = editingLocked || !draft;
+    $('frame-add').disabled = editingLocked || !draft || count >= maxFrames;
+    $('frame-duplicate').disabled = editingLocked || !draft || count >= maxFrames;
+    $('frame-left').disabled = editingLocked || !draft || selectedFrame === 0;
+    $('frame-right').disabled = editingLocked || !draft || selectedFrame >= count - 1;
+    $('frame-remove').disabled = editingLocked || !draft || count <= 1;
+    $('frame-capture').disabled = editingLocked || !draft || blocked || !finitePose(robot.servo_angles);
+    $('action-preview').disabled = editingLocked || !draft || count < 2 || draft.frames.some(f => !finitePose(f.angles) || !Number.isFinite(f.speed_deg_s) || f.speed_deg_s <= 0 || !Number.isFinite(f.hold_seconds));
+    $('action-scrub').disabled = editingLocked || !draft || count < 2;
     $('action-reset').hidden = !baseline?.builtin;
-    $('action-reset').disabled = saving || dirty || !baseline?.modified || !known || blocked;
+    $('action-reset').disabled = editingLocked || dirty || !baseline?.modified || !known || blocked;
     $('action-reset').textContent = robot.armed ? 'Disarm and restore default' : 'Restore built-in default';
     $('action-delete').hidden = !selectedName || baseline?.builtin;
-    $('action-delete').disabled = saving || dirty || !known || robot.armed || blocked;
-    $('action-save-hint').textContent = !known ? 'Robot state is unavailable; saving and running are disabled.' : blocked ? 'Stop or finish the current movement, plan or test before saving or running.' : error && dirty ? 'Correct the highlighted values before saving. Your draft is kept.' : dirty && robot.armed ? 'Saving explicitly disarms motion. The action will not run until you arm and run it.' : dirty ? 'Saving updates this shared action everywhere. It never moves the robot.' : !robot.armed ? 'Saved action. Arm motion to run; editing and previewing never move the robot.' : 'Saved action. Use Run to move the robot, or Preview for a browser-only animation.';
+    $('action-delete').disabled = editingLocked || dirty || !known || robot.armed || blocked;
+    $('action-save-hint').textContent = !known ? 'Robot state is unavailable; saving and running are disabled.' : blocked ? 'Stop or finish the current movement, plan or test before saving or running.' : error && dirty ? 'Correct the highlighted values before saving. Your draft is kept.' : dirty && robot.armed ? 'Saving explicitly disarms motion. The action will not run until you arm and run it.' : dirty ? 'Saving updates this shared action everywhere. It never moves the robot.' : !robot.armed ? 'Saved action. Use Arm & play above to run; editing and previewing never move the robot.' : 'Saved action. Use Play on robot above, or Preview for a browser-only animation.';
     const budget = robot.servo_budget || {};
     $('action-budget-hint').textContent = `The frame rate is a ceiling for changing servo angles. The caller’s speed setting and the robot’s power budget can slow it further.${Number.isFinite(budget.per_servo_deg_s) ? ` Current per-servo limit: ${budget.per_servo_deg_s}°/s.` : ''}`;
     $('action-playback-help').textContent = draft?.playback === 'continuous' ? 'Continuous paths join sampled waypoints without an intentional stop at each one. Holds and speed changes divide the path. Used by walking and turning actions.' : 'Each keyframe is completed before the next begins. The speed and hold belong to the selected destination frame.';
@@ -117,9 +129,33 @@ export function initActionsEditor({root, call, getStatus, onChanged, onAddToPlan
       element('text', {x: x + 67, y: row + 18, 'text-anchor': 'middle', class: 'preview-leg-title'}, LEGS[leg]);
       element('line', {x1: x, x2: x + 148, y1: row + 150, y2: row + 150, class: 'preview-ground'});
       element('polyline', {points: points.map(([r,z]) => `${x + r * .85},${y - z * .85}`).join(' '), class: 'preview-limb'});
-      points.forEach(([r,z], i) => element('circle', {cx: x + r * .85, cy: y - z * .85, r: i === 3 ? 4.5 : 3, class: i === 3 ? 'preview-foot' : 'preview-joint'}));
+      points.forEach(([r,z], i) => {
+        const cx = x + r * .85, cy = y - z * .85;
+        if (i === 3) { element('circle', {cx, cy, r: 4.5, class: 'preview-foot'}); return; }
+        const index = leg * 3 + [2,1,0][i], label = `${LEGS[leg]} ${JOINTS[index % 3]}`;
+        const node = element('g', {class: 'preview-joint-node', role: 'button', tabindex: '0', 'data-servo': index, 'aria-label': `Edit ${label} angle`, 'aria-pressed': String(selectedJoint === index)});
+        for (const [radius, className] of [[13,'preview-joint-hit'],[6,'preview-joint']]) {
+          const circle = document.createElementNS(svgNS,'circle'); circle.setAttribute('cx',cx); circle.setAttribute('cy',cy); circle.setAttribute('r',radius); circle.setAttribute('class',className); node.append(circle);
+        }
+        const tip = document.createElementNS(svgNS,'title'); tip.textContent = `${label}: ${angles[index].toFixed(1)}° · click to edit`; node.append(tip);
+        node.addEventListener('click', () => selectJoint(index));
+        node.addEventListener('keydown', event => { if (event.key === 'Enter' || event.key === ' ') { event.preventDefault(); selectJoint(index, true); } });
+      });
       element('text', {x: x + 67, y: row + 177, 'text-anchor': 'middle', class: 'preview-angle-label'}, `Hip angle ${angles[leg * 3 + 2].toFixed(1)}°`);
     }
+  }
+  function syncJointEditor(skip = '') {
+    const frame = draft?.frames?.[selectedFrame], index = selectedJoint;
+    if (index === null || !frame) { $('selected-joint-name').textContent = 'Select a joint above'; $('selected-joint-detail').textContent = 'The twelve outlined nodes are servo pivots. The solid feet are endpoints.'; $('selected-joint-angle').value = ''; return; }
+    const value = frame.angles[index], [low, high] = BOUNDS[index % 3];
+    $('selected-joint-name').textContent = `${LEGS[Math.floor(index / 3)]} · ${JOINTS[index % 3]}`;
+    $('selected-joint-detail').textContent = `Editing frame ${selectedFrame + 1} · ${low} to ${high}° · save to keep your changes. This does not move the robot.`;
+    for (const id of ['selected-joint-slider','selected-joint-angle']) { $(id).min = low; $(id).max = high; if (skip !== id) $(id).value = Number.isFinite(value) ? Number(value.toFixed(3)) : ''; }
+  }
+  function selectJoint(index, keyboard = false) {
+    if (!draft || saving || playback?.pending) return;
+    stopPreview(); selectedJoint = index; $('action-scrub').value = selectedFrame; scrub(selectedFrame); syncJointEditor(); controls();
+    if (keyboard) root.querySelector(`[data-servo="${index}"]`)?.focus();
   }
   function scrub(value) {
     if (!draft?.frames.length) return;
@@ -147,11 +183,11 @@ export function initActionsEditor({root, call, getStatus, onChanged, onAddToPlan
     $('frame-speed').value = frame?.speed_deg_s ?? 30; $('frame-hold').value = frame?.hold_seconds ?? 0;
     angleInputs.forEach((input, i) => { input.value = Number.isFinite(frame?.angles[i]) ? Number(frame.angles[i].toFixed(3)) : ''; input.title = Number.isFinite(frame?.angles[i]) ? `Stored command: ${frame.angles[i]}°` : '';  input.disabled = !frame; });
     $('action-scrub').max = Math.max(0, (draft?.frames.length || 1) - 1); $('action-scrub').value = selectedFrame;
-    renderTimeline(); scrub(selectedFrame); controls();
+    renderTimeline(); scrub(selectedFrame); syncJointEditor(); controls();
   }
   function changed(timeline = true) { stopPreview(); dirty = true; message(''); if (timeline) renderTimeline(); scrub(selectedFrame); controls(); }
   function setDraft(action, name = action?.name || null, isNew = false) {
-    stopPreview(); selectedName = name; baseline = action ? copy(action) : null; draft = action ? copy(action) : null; selectedFrame = 0; dirty = isNew;
+    stopPreview(); selectedJoint = null; selectedName = name; baseline = action ? copy(action) : null; draft = action ? copy(action) : null; selectedFrame = 0; dirty = isNew;
     $('action-name').value = draft?.name || ''; $('action-name').readOnly = Boolean(name);
     $('action-description').value = draft?.description || ''; $('action-playback').value = draft?.playback || 'keyframes';
     $('action-editor-title').textContent = name ? title(name) : 'New keyframe action';
@@ -185,6 +221,13 @@ export function initActionsEditor({root, call, getStatus, onChanged, onAddToPlan
     const index = actions.findIndex(a => a.name === action.name); if (index < 0) actions.push(copy(action)); else actions[index] = copy(action);
     setDraft(action); await onChanged?.(copy(actions));
   }
+  for (const id of ['selected-joint-slider','selected-joint-angle']) $(id).addEventListener('input', () => {
+    if (!draft || selectedJoint === null || saving || playback?.pending) return;
+    const value = $(id).value === '' ? NaN : Number($(id).value);
+    draft.frames[selectedFrame].angles[selectedJoint] = value;
+    angleInputs[selectedJoint].value = Number.isFinite(value) ? value : '';
+    changed(false); syncJointEditor(id);
+  });
   $('action-search').addEventListener('input', renderLibrary);
   $('action-new').addEventListener('click', () => freshAction());
   $('action-copy').addEventListener('click', () => freshAction(true));
@@ -223,11 +266,14 @@ export function initActionsEditor({root, call, getStatus, onChanged, onAddToPlan
     } catch (error) { message(error.message, 'error'); }
     finally { saving = false; controls(); }
   });
-  $('action-run').addEventListener('click', async () => { controls(); if ($('action-run').disabled) return; try { await call('move', {name: selectedName, speed: 80, steps: 1}); message('Saved action started. Keep this interface connected.'); } catch (error) { message(error.message, 'error'); } });
+  function transportMessage(text, kind = '') { $('action-transport-notice').textContent = text; $('action-transport-notice').className = `notice ${kind}`; $('action-transport-notice').hidden = !text; }
+  $('action-run').addEventListener('click', async () => { controls(); if ($('action-run').disabled) return; stopPreview(); transportMessage(''); try { await playback.play('move', {name: selectedName, speed: 80, steps: 1}); transportMessage('Saved action started. Keep this controller connected.'); } catch (error) { transportMessage(error.message, 'error'); } finally { controls(); } });
+  $('action-stop').addEventListener('click', async () => { if ($('action-stop').disabled) return; transportMessage(''); try { await playback.stop(); transportMessage('Robot stopped and motion disarmed.'); } catch (error) { transportMessage(error.message, 'error'); } finally { controls(); } });
   $('action-add-to-plan').addEventListener('click', () => { if (selectedName && !dirty) onAddToPlan?.(selectedName); });
   $('action-reset').addEventListener('click', async () => { controls(); if ($('action-reset').disabled) return; saving = true; controls(); try { await publish(await call('action_reset', {name: selectedName, ...(getStatus()?.armed ? {disarm: true} : {})})); message('Built-in action restored.'); } catch (error) { message(error.message, 'error'); } finally { saving = false; controls(); } });
   $('action-delete').addEventListener('click', async () => { controls(); if ($('action-delete').disabled) return; saving = true; controls(); try { await call('action_delete', {name: selectedName}); actions = actions.filter(a => a.name !== selectedName); setDraft(actions.find(a => a.name === 'stand') || actions[0] || null); await onChanged?.(copy(actions)); message('Custom action deleted.'); } catch (error) { message(error.message, 'error'); } finally { saving = false; controls(); } });
   new ResizeObserver(entries => { const width = Math.round(entries[0].contentRect.width); if (width !== previewWidth) { previewWidth = width; if (width && previewAngles) drawPose(previewAngles); } }).observe($('action-pose-preview'));
+  playback?.subscribe(controls);
   setDraft(null);
   return {
     setLibrary(next, limits = {}) {
