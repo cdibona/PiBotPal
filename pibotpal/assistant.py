@@ -72,8 +72,17 @@ class Assistant:
             if tool.name not in allowed_robot:
                 continue
             alias = 'robot_' + tool.name
-            specifications.append({'type': 'function', 'function': {'name': alias, 'description': tool.description or '',
-                                                                     'parameters': tool.inputSchema}})
+            parameters = copy.deepcopy(tool.inputSchema)
+            description = tool.description or ''
+            if tool.name in ('move', 'plan_run'):
+                # Editor arm-and-play is an operator permission, never a
+                # capability granted by enabling a model's movement tool.
+                parameters.get('properties', {}).pop('arm_motion', None)
+                if 'required' in parameters:
+                    parameters['required'] = [key for key in parameters['required'] if key != 'arm_motion']
+                description = ('Play a saved robot action.' if tool.name == 'move' else 'Play a saved robot plan.') + ' The operator must already have armed motion; models cannot arm the robot.'
+            specifications.append({'type': 'function', 'function': {'name': alias, 'description': description,
+                                                                     'parameters': parameters}})
             dispatch[alias] = ('robot', tool.name)
         for public in self.settings.public()['connections']:
             if not public['enabled'] or not public['allowed_tools']:
@@ -99,6 +108,8 @@ class Assistant:
         if connection_id == 'robot':
             if name not in self.settings.public()['defaults']['robot_tools']:
                 raise ValueError('Robot tool permission was revoked')
+            if name in ('move', 'plan_run') and arguments.get('arm_motion', False) is not False:
+                raise ValueError('Models cannot arm robot motion; the operator must arm it explicitly')
             return await self.call_robot_tool(name, arguments)
         connection = self.settings.connection(connection_id)
         return await integrations.call_mcp(connection, name, arguments)

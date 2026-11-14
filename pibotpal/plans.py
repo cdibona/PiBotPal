@@ -240,6 +240,27 @@ class PlanStore:
         with self._dispatch:
             return self._start(plan_id, timeout_seconds)
 
+    def validate_run(self, plan_id, timeout_seconds=300):
+        """Preflight every saved step without requiring or changing arming."""
+        _number(timeout_seconds, 1, 300, 'Plan timeout')
+        with self._lock:
+            if self._closed:
+                raise RuntimeError('Plan runner is closed')
+            if self._state['running']:
+                raise RuntimeError('Another plan is running')
+            if self.controller.status().get('busy'):
+                raise RuntimeError('Wait for current movement to finish')
+            plan = self.get_plan(plan_id)
+            plan['steps'] = self.validate_steps(plan['steps'])
+            # Action steps must also pass their current calibration before an
+            # explicit arm-and-play request can grant motion permission. Check
+            # every step, including actions following waits or other poses.
+            if hasattr(self.controller, 'validate_action'):
+                for step in plan['steps']:
+                    if step['type'] == 'action':
+                        self.controller.validate_action(step['name'], speed=step['speed'], steps=step['steps'])
+            return plan
+
     def _start(self, plan_id, timeout_seconds):
         timeout = _number(timeout_seconds, 1, 300, 'Plan timeout')
         with self._lock:
@@ -252,8 +273,7 @@ class PlanStore:
                 raise RuntimeError('Arm the robot before running a plan')
             if state.get('busy'):
                 raise RuntimeError('Wait for current movement to finish')
-            plan = self.get_plan(plan_id)
-            plan['steps'] = self.validate_steps(plan['steps'])
+            plan = self.validate_run(plan_id, timeout_seconds)
             self._cancel.clear()
             self._state = {'running': True, 'plan_id': plan['id'], 'plan_name': plan['name'],
                            'phase': 'starting', 'step_index': None, 'step_count': len(plan['steps']),

@@ -207,10 +207,31 @@ def create_app(controller=None, media=None):
             ensure_manual()
             return await invoke(operation, *args, **kwargs)
 
+    async def playback_locked(operation, *args, arm_motion=False, **kwargs):
+        # Caller holds motion_gate and has preflighted the complete saved work.
+        # STOP cannot run between the explicit permission change and dispatch.
+        newly_armed = arm_motion and not controller.status()['armed']
+        if arm_motion:
+            lease['last_seen'] = time.monotonic()
+        if newly_armed:
+            await arm_locked(True)
+        try:
+            return await invoke(operation, *args, **kwargs)
+        except Exception:
+            # A dispatch failure must not leave a new permission behind. Do
+            # not change existing permission for ordinary already-armed calls.
+            if newly_armed:
+                await arm_locked(False)
+            raise
+
     @mcp.tool()
-    async def move(name: str, speed: int = 40, steps: int = 1) -> dict:
-        """Run a saved shared keyframe action by name, including custom actions. Speed (1–80) caps frame rates at speed*1.8 degrees/second; servo power limits also apply."""
-        result = await manual(controller.action, name, speed=speed, steps=steps)
+    async def move(name: str, speed: int = 40, steps: int = 1, arm_motion: bool = False) -> dict:
+        """Run a saved shared keyframe action by name. Explicit arm_motion=true arms and plays after validation; otherwise already armed is required. Speed (1–80) caps frame rates at speed*1.8 degrees/second; servo power limits also apply."""
+        async with motion_gate:
+            ensure_manual()
+            if arm_motion:
+                await invoke(controller.validate_action, name, speed=speed, steps=steps)
+            result = await playback_locked(controller.action, name, speed=speed, steps=steps, arm_motion=arm_motion)
         return result if isinstance(result, dict) else await get_status()
 
     @mcp.tool()
@@ -463,14 +484,17 @@ def create_app(controller=None, media=None):
     @mcp.tool()
     async def plan_delete(plan_id: str) -> dict:
         """Delete a saved plan."""
-        return await invoke(plans.delete_plan, plan_id)
+        async with motion_gate:
+            return await invoke(plans.delete_plan, plan_id)
 
     @mcp.tool()
-    async def plan_run(plan_id: str) -> dict:
-        """Explicitly execute a saved plan, already armed, maximum 300 seconds. Operator heartbeat still required."""
+    async def plan_run(plan_id: str, arm_motion: bool = False) -> dict:
+        """Play a saved plan, maximum 300 seconds. Explicit arm_motion=true arms and plays after checking every step; otherwise already armed is required. Operator heartbeat still required."""
         async with motion_gate:
             ensure_manual()
-            return await invoke(plans.run, plan_id)
+            if arm_motion:
+                await invoke(plans.validate_run, plan_id)
+            return await playback_locked(plans.run, plan_id, arm_motion=arm_motion)
 
     @mcp.tool()
     async def plan_stop() -> dict:

@@ -84,6 +84,60 @@ def test_action_catalog_can_be_enabled_without_movement_tools(tmp_path, monkeypa
     run(scenario())
 
 
+@pytest.mark.parametrize('name', ['move', 'plan_run'])
+def test_model_playback_schema_excludes_operator_arming(tmp_path, monkeypatch, name):
+    assistant, settings, _, calls = setup(tmp_path, tools=['move'])
+    # Include plan_run in this fake policy to protect a future allowlist change.
+    public = settings.public()
+    public['defaults']['robot_tools'] = [name]
+    monkeypatch.setattr(settings, 'public', lambda: public)
+    schema = {'type': 'object', 'properties': {'name': {'type': 'string'},
+               'arm_motion': {'type': 'boolean', 'default': False}}, 'required': ['name']}
+    async def listing():
+        return [types.Tool(name=name, description='Explicit arm_motion=true arms and plays', inputSchema=schema)]
+    assistant.list_robot_tools = listing
+    async def scenario():
+        tools, _ = await assistant._tools(public['defaults'])
+        assert 'arm_motion' not in tools[0]['function']['parameters']['properties']
+        assert 'operator must already have armed' in tools[0]['function']['description']
+        assert 'arm_motion' in schema['properties'], 'The public MCP schema must remain unchanged'
+        assert calls == []
+    run(scenario())
+
+
+@pytest.mark.parametrize('name', ['move', 'plan_run'])
+@pytest.mark.parametrize('arm_motion', [True, 'true', 1, '1', None, 0])
+def test_forged_model_arm_and_play_is_rejected_before_dispatch(tmp_path, monkeypatch, name, arm_motion):
+    assistant, settings, _, calls = setup(tmp_path, tools=['move'])
+    public = settings.public()
+    public['defaults']['robot_tools'] = [name]
+    monkeypatch.setattr(settings, 'public', lambda: public)
+    async def scenario():
+        with pytest.raises(ValueError, match='Models cannot arm'):
+            await assistant._execute_tool(('robot', name), {'name': 'stand', 'arm_motion': arm_motion})
+        assert calls == []
+        await assistant._execute_tool(('robot', name), {'name': 'stand', 'arm_motion': False})
+        assert calls == [(name, {'name': 'stand', 'arm_motion': False})]
+    run(scenario())
+
+
+def test_model_receives_arm_and_play_rejection_without_moving(tmp_path, monkeypatch):
+    assistant, _, _, calls = setup(tmp_path, tools=['move'])
+    turns = []
+    async def complete(provider, messages, tools, options):
+        turns.append(True)
+        if len(turns) == 1:
+            return response(calls=[call('robot_move', {'name': 'stand', 'arm_motion': True})])
+        assert 'Models cannot arm' in messages[-1]['content']
+        return response('Please arm motion manually first.')
+    monkeypatch.setattr(integrations, 'complete', complete)
+    async def scenario():
+        job = await finish(assistant, assistant.start('Play stand', use_tools=True))
+        assert job['status'] == 'complete' and job['trace'][0]['status'] == 'error'
+        assert calls == []
+    run(scenario())
+
+
 @pytest.mark.parametrize('name,use_tools',[('robot_arm',True),('robot_admin_save_provider',True),('unknown',True),('robot_get_status',False)])
 def test_unknown_or_undeclared_tool_calls_never_execute(tmp_path,monkeypatch,name,use_tools):
     assistant,_,_,calls=setup(tmp_path)

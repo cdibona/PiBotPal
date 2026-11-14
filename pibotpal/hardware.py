@@ -277,18 +277,24 @@ class Controller:
             self._queue.put_nowait(operation)
         return self.status()
 
-    def action(self, name, speed=40, steps=1):
-        speed = self._speed(speed)
+    def validate_action(self, name, speed=40, steps=1):
+        """Validate and snapshot a saved action without arming or enqueueing it."""
+        self._speed(speed)
         if isinstance(steps, bool) or not isinstance(steps, int) or not 1 <= steps <= 5:
             raise ValueError('steps must be an integer from 1 to 5')
         with self._lock:
-            # Snapshot every frame before enqueueing so an edit never changes
-            # an accepted action halfway through its execution.
             definition = self.actions.get(name)
             for frame in definition['frames']:
                 for index, angle in enumerate(frame['angles']):
                     if not -90 <= angle + self._offsets[index] <= 90:
                         raise ValueError(f'Keyframe servo {index} exceeds current calibrated limits')
+            return definition
+
+    def action(self, name, speed=40, steps=1):
+        with self._lock:
+            # Snapshot every frame before enqueueing so an edit never changes
+            # an accepted action halfway through its execution.
+            definition = self.validate_action(name, speed, steps)
             return self._submit(name, lambda: self._perform_action(definition, speed, steps))
 
     def _perform_action(self, definition, speed, steps):
