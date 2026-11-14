@@ -19,10 +19,7 @@ import threading
 import time
 
 from .kinematics import CHANNELS, DIRECTIONS, LIMITS, finite, inverse, leg_geometry
-
-ACTIONS = ('stand', 'sit', 'ready', 'forward', 'backward', 'turn left', 'turn right',
-           'turn left angle', 'turn right angle', 'push up', 'wave', 'look left',
-           'look right', 'look up', 'look down', 'dance')
+from .actions import ActionStore, BUILTIN_ACTIONS as ACTIONS
 
 
 class MotionCancelled(Exception):
@@ -30,11 +27,9 @@ class MotionCancelled(Exception):
 
 
 class Controller:
-    def __init__(self, simulate=None, *, servo_factory=None, sonar_factory=None, config_path=None, moves_factory=None, budget_path=None):
+    def __init__(self, simulate=None, *, servo_factory=None, sonar_factory=None, config_path=None, moves_factory=None, budget_path=None, action_path=None):
         self.simulate = os.getenv('PIBOTPAL_SIMULATE', '0') == '1' if simulate is None else bool(simulate)
         self._servo_factory, self._sonar_factory = servo_factory, sonar_factory
-        from .motion import MotionPlan
-        self._moves_factory = moves_factory or MotionPlan
         self._config = Path(config_path or Path.home() / '.config/.picrawler.config')
         self._lock = threading.RLock()
         self._io_lock = threading.RLock()
@@ -42,12 +37,14 @@ class Controller:
         self._queue = queue.Queue(maxsize=1)
         self._worker = self._sensor = None
         self._ownership = None
-        self._servos, self._sonar, self._moves = [], None, None
+        self._servos, self._sonar = [], None
         self._hat = None
         self._armed = self._busy = self._estop = False
         self._interrupting = 0
         self._motion_id = 0
         self._action = self._action_error = None
+        self._action_deadline = None
+        self._keyframes = {'phase': 'idle', 'action': None, 'frame_index': None, 'frame_count': 0}
         self._angles = [None] * 12
         self._offsets = [0.0] * 12
         self._errors = []
@@ -64,6 +61,7 @@ class Controller:
         self._group_settle_until = 0.0
         self._read_offsets()
         self._read_budget()
+        self.actions = ActionStore(action_path or self._budget_path.with_name('actions.json'), moves_factory=moves_factory)
 
     def _error(self, message):
         with self._lock:
@@ -187,6 +185,7 @@ class Controller:
                 'motion_id': self._motion_id,
                 'servo_budget': self.servo_budget(),
                 'action': self._action, 'action_error': self._action_error,
+                'keyframes': dict(self._keyframes),
                 'simulate': self.simulate, 'servo_angles': angles,
                 'servo_offsets': list(self._offsets), 'servo_directions': list(DIRECTIONS),
                 'servo_channels': list(CHANNELS),
@@ -279,32 +278,58 @@ class Controller:
         return self.status()
 
     def action(self, name, speed=40, steps=1):
-        if name not in ACTIONS:
-            raise ValueError('Unknown action')
         speed = self._speed(speed)
         if isinstance(steps, bool) or not isinstance(steps, int) or not 1 <= steps <= 5:
             raise ValueError('steps must be an integer from 1 to 5')
-        def perform():
-            if self._moves is None:
-                self._moves = self._moves_factory()
-            path = []
-            for _ in range(steps):
-                self._check_cancel()
-                poses = getattr(self._moves, name.replace(' ', '_'))
-                from .motion import validate_plan
-                validate_plan(poses)
-                path.extend(self._pose_angles(pose) for pose in poses)
-                if name in ('forward', 'backward', 'turn left', 'turn right', 'turn left angle', 'turn right angle'):
-                    self._moves.stand_position = (self._moves.stand_position + 1) & 1
-            if name in ('forward', 'backward', 'turn left', 'turn right', 'turn left angle', 'turn right angle'):
-                self._move_path(path, speed)
-            else:
-                # Gesture poses are keyframes: every affected joint reaches a
-                # pose before any joint begins the next pose. Only sampled gait
-                # paths merge adjacent waypoints into continuous trajectories.
-                for target in path:
-                    self._move(target, speed)
-        return self._submit(name, perform)
+        with self._lock:
+            # Snapshot every frame before enqueueing so an edit never changes
+            # an accepted action halfway through its execution.
+            definition = self.actions.get(name)
+            for frame in definition['frames']:
+                for index, angle in enumerate(frame['angles']):
+                    if not -90 <= angle + self._offsets[index] <= 90:
+                        raise ValueError(f'Keyframe servo {index} exceeds current calibrated limits')
+            return self._submit(name, lambda: self._perform_action(definition, speed, steps))
+
+    def _perform_action(self, definition, speed, steps):
+        frames = definition['frames']
+        self._action_deadline = time.monotonic() + 300
+        progress = {'phase': 'moving', 'action': definition['name'], 'revision': definition['revision'],
+                    'frame_index': 0, 'frame_end_index': 0, 'frame_count': len(frames), 'cycle': 1, 'cycles': steps}
+        def update(**changes):
+            progress.update(changes)
+            with self._lock:
+                self._keyframes = dict(progress)
+        try:
+            for cycle in range(1, steps + 1):
+                index = 0
+                while index < len(frames):
+                    self._check_cancel()
+                    end = index
+                    rate = min(frames[index]['speed_deg_s'], 180 * speed / 100)
+                    if definition['playback'] == 'continuous':
+                        # Smooth sampled paths can share one timeline while
+                        # their rate is constant. Holds and rate changes are
+                        # explicit boundaries, never silently skipped.
+                        while (end + 1 < len(frames) and frames[end]['hold_seconds'] == 0
+                               and min(frames[end + 1]['speed_deg_s'], 180 * speed / 100) == rate):
+                            end += 1
+                    update(phase='moving', frame_index=index, frame_end_index=end, cycle=cycle)
+                    self._move_path([frame['angles'] for frame in frames[index:end + 1]], rate / 1.8)
+                    hold = frames[end]['hold_seconds']
+                    if hold:
+                        update(phase='holding', frame_index=end, frame_end_index=end)
+                        self._wait_motion(hold)
+                    index = end + 1
+            update(phase='complete', frame_index=len(frames) - 1, frame_end_index=len(frames) - 1)
+        except MotionCancelled:
+            update(phase='cancelled')
+            raise
+        except Exception:
+            update(phase='failed')
+            raise
+        finally:
+            self._action_deadline = None
 
     def _pose_angles(self, coords, strict=True):
         if not isinstance(coords, (list, tuple)) or len(coords) != 4:
@@ -380,6 +405,16 @@ class Controller:
     def _check_cancel(self):
         if self._cancel.is_set() or self._closed.is_set():
             raise MotionCancelled()
+        if self._action_deadline is not None and time.monotonic() >= self._action_deadline:
+            raise RuntimeError('Action exceeded its 300 second execution timeout')
+
+    def _wait_motion(self, seconds):
+        self._check_cancel()
+        if self._action_deadline is not None:
+            seconds = min(seconds, max(0, self._action_deadline - time.monotonic()))
+        if self._cancel.wait(seconds):
+            raise MotionCancelled()
+        self._check_cancel()
 
     def _get_hat(self):
         with self._io_lock:
@@ -443,9 +478,7 @@ class Controller:
         if wait_until > now:
             with self._lock:
                 self._budget_phase, self._active_servos = 'settling', []
-            if self._cancel.wait(wait_until - now):
-                raise MotionCancelled()
-            self._check_cancel()
+            self._wait_motion(wait_until - now)
         with self._lock:
             self._budget_phase, self._active_servos = phase, list(group)
 
@@ -485,9 +518,7 @@ class Controller:
                     self._group_settle_until = time.monotonic() + delay
                 with self._lock:
                     self._budget_phase, self._active_servos = 'settling unknown positions', []
-                if self._cancel.wait(delay):
-                    raise MotionCancelled()
-                self._check_cancel()
+                self._wait_motion(delay)
             # Consecutive segments with the same changed joint groups share a
             # continuous trajectory. In a crawl this keeps a foot's complete
             # lift/swing/plant path together rather than pausing each waypoint.
@@ -533,9 +564,7 @@ class Controller:
             deadline = time.monotonic() + .02
             while elapsed < total - 1e-12:
                 self._check_cancel()
-                if self._cancel.wait(max(0, deadline - time.monotonic())):
-                    raise MotionCancelled()
-                self._check_cancel()
+                self._wait_motion(max(0, deadline - time.monotonic()))
                 elapsed = min(total, elapsed + .02)
                 while segment < len(durations)-1 and elapsed > consumed + durations[segment]:
                     consumed += durations[segment]
@@ -560,15 +589,13 @@ class Controller:
                 self._check_cancel()
                 operation()
             except MotionCancelled:
-                # Gait planner state may have advanced past the interrupted pose.
-                self._moves = None
+                pass
             except Exception as exc:
                 self._action_error = str(exc)
                 self._error(f'Motion failed: {exc}')
                 self._cancel.set()
                 with self._lock:
                     self._armed, self._estop = False, True
-                self._moves = None
             finally:
                 with self._lock:
                     self._busy, self._action = False, None

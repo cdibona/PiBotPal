@@ -36,7 +36,7 @@ def defaults():
                           'mode': 'hold' if action in DRIVING else 'press'} for key, action in pairs]}
 
 
-def validate_mapping(value):
+def validate_mapping(value, action_names=None):
     if (not isinstance(value, dict) or set(value) != {'version', 'speed', 'deadzone', 'bindings'}
             or type(value['version']) is not int or value['version'] != 1):
         raise ValueError('Invalid controller mapping version or fields')
@@ -59,7 +59,8 @@ def validate_mapping(value):
         if key in seen:
             raise ValueError('An input can have only one action')
         seen.add(key)
-        if (not isinstance(item['action'], str) or item['action'] not in ACTION_IDS
+        allowed = ACTION_IDS if action_names is None else list(action_names) + ['stop']
+        if (not isinstance(item['action'], str) or item['action'] not in allowed
                 or not isinstance(item['mode'], str) or item['mode'] not in ('press', 'hold')):
             raise ValueError('Unknown controller action or mode')
         if item['mode'] == 'hold' and item['action'] not in DRIVING:
@@ -68,18 +69,19 @@ def validate_mapping(value):
 
 
 class MappingStore:
-    def __init__(self, path):
+    def __init__(self, path, action_names=None):
         self.path = Path(path)
+        self._action_names = action_names or (lambda: ACTION_IDS)
         self.value = defaults()
         if self.path.exists():
             try:
-                self.value = validate_mapping(json.loads(self.path.read_text()))
+                self.value = validate_mapping(json.loads(self.path.read_text()), self._action_names())
                 os.chmod(self.path, 0o600)
             except (OSError, ValueError, TypeError) as exc:
                 raise RuntimeError('Controller mappings could not be read; repair controller-mapping.json') from exc
 
     def save(self, speed, deadzone, bindings):
-        value = validate_mapping({'version': 1, 'speed': speed, 'deadzone': deadzone, 'bindings': bindings})
+        value = validate_mapping({'version': 1, 'speed': speed, 'deadzone': deadzone, 'bindings': bindings}, self._action_names())
         self.path.parent.mkdir(parents=True, exist_ok=True)
         fd, name = tempfile.mkstemp(prefix='.controller-mapping-', dir=self.path.parent)
         try:
@@ -114,8 +116,10 @@ class MappingStore:
             if binding['input'] not in known:
                 inputs.append({'id': binding['input'], 'label': binding['input'] + ' (not attached)',
                                'kind': binding['input'].split(':')[0]})
+        action_ids = list(dict.fromkeys([name for name in self._action_names()
+                                        if name not in ('turn left angle', 'turn right angle')] + ['stop']))
         value.update(inputs=inputs, actions=[{'id': name, 'label': 'Stop & disarm' if name == 'stop' else name.capitalize(),
-                                             'hold': name in DRIVING} for name in ACTION_IDS], reserved=['button:Start'])
+                                             'hold': name in DRIVING} for name in action_ids], reserved=['button:Start'])
         return value
 
 

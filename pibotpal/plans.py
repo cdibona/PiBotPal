@@ -191,12 +191,13 @@ class PlanStore:
         if not isinstance(steps, list) or not 1 <= len(steps) <= 64:
             raise ValueError('Plan requires between 1 and 64 steps')
         result = []
+        action_names = self.controller.actions.names() if hasattr(self.controller, 'actions') else ACTIONS
         for step in steps:
             if not isinstance(step, dict):
                 raise ValueError('Every plan step must be an object')
             kind = step.get('type')
             if kind == 'action':
-                if set(step) - {'type', 'name', 'speed', 'steps'} or step.get('name') not in ACTIONS:
+                if set(step) - {'type', 'name', 'speed', 'steps'} or step.get('name') not in action_names:
                     raise ValueError('Unsupported plan action')
                 result.append({'type': kind, 'name': step['name'],
                                'speed': _number(step.get('speed', 35), 1, 80, 'Speed', True),
@@ -331,7 +332,7 @@ _WORDS = dict(zip(('one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight
                    'eighteen', 'nineteen', 'twenty'), range(1, 21)))
 
 
-def parse_plan(text, speed=35):
+def parse_plan(text, speed=35, action_names=None):
     """Parse a deliberately small command language; ambiguous input fails closed.
 
     Larger counts become several bounded action steps. Unsupported sensor
@@ -342,7 +343,7 @@ def parse_plan(text, speed=35):
     normalized = original.lower().replace('and then', ',').replace('then', ',')
     clauses = [part.strip() for part in re.split(r'[.,;\n]+', normalized) if part.strip()]
     steps = []
-    names = sorted(ACTIONS, key=len, reverse=True)
+    names = sorted(ACTIONS if action_names is None else action_names, key=len, reverse=True)
     aliases = {'move forward': 'forward', 'walk forward': 'forward', 'move backward': 'backward',
                'walk backward': 'backward', 'left': 'turn left', 'right': 'turn right'}
     for clause in clauses:

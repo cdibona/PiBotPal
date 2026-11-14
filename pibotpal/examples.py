@@ -15,7 +15,7 @@ from pathlib import Path
 import threading
 import time
 
-from .motion import MotionPlan, stance
+from .motion import stance
 
 
 def choice(*values, default=None, description=""):
@@ -372,8 +372,7 @@ class ExampleRunner:
 
     def _twist(self, speed):
         self._update(phase="body sway")
-        for pose in MotionPlan().dance:
-            self._pose(pose, speed)
+        self._action("dance", speed)
 
     def _preset(self, name, speed):
         # These are independent compositions of the public, bounded primitives.
